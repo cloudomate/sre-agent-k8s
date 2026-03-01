@@ -1,0 +1,139 @@
+[
+  {
+    "id": "RB-KV-001",
+    "title": "KubeVirt VM Not Starting / VirtualMachine in Stopped or Error State",
+    "tags": ["kubevirt", "vm", "virtualmachine", "virt-launcher"],
+    "symptoms": [
+      "kubectl get vm shows VM in Stopped or ErrorUnschedulable state",
+      "kubectl get vmi shows no VMI object or VMI in Failed state",
+      "VM pod (virt-launcher-*) in Pending or Error state",
+      "Alert: KubeVirtVMINotRunning"
+    ],
+    "causes": [
+      "Insufficient node resources (CPU, memory) for VM request",
+      "KVM kernel module not available on node (virtualization not enabled)",
+      "virt-launcher image pull failure",
+      "PVC referenced by VM not bound",
+      "Node selector / affinity rules preventing scheduling",
+      "virt-handler pod not running on the target node"
+    ],
+    "investigation": [
+      "kubectl get vm -A",
+      "kubectl get vmi -A",
+      "kubectl describe vmi <name> -n <namespace>",
+      "kubectl get pod -A | grep virt-launcher",
+      "kubectl describe pod <virt-launcher-pod> -n <namespace>",
+      "kubectl -n kubevirt get pods",
+      "kubectl -n kubevirt logs deploy/virt-controller --tail=100",
+      "# On node (SSH): ls /dev/kvm  # must exist"
+    ],
+    "remediation": [
+      "If node lacks /dev/kvm: enable nested virtualization on the hypervisor or use hardware that supports KVM",
+      "If resource constrained: check node capacity, scale cluster or resize VM",
+      "If PVC not bound: fix the underlying storage issue first (see Rook-Ceph runbooks)",
+      "Restart virt-operator: kubectl -n kubevirt rollout restart deploy/virt-operator",
+      "Restart virt-controller: kubectl -n kubevirt rollout restart deploy/virt-controller",
+      "Force VM restart: kubectl patch vm <name> -n <ns> --type merge -p '{\"spec\":{\"running\":false}}' then set running: true",
+      "Check virt-handler on target node: kubectl -n kubevirt get pod -l kubevirt.io=virt-handler -o wide"
+    ],
+    "escalation": "If KVM is not available cluster-wide, no VMs can run. This is a hardware/configuration issue requiring platform team involvement."
+  },
+  {
+    "id": "RB-KV-002",
+    "title": "KubeVirt virt-launcher Pod CrashLoopBackOff",
+    "tags": ["kubevirt", "virt-launcher", "crash", "vm"],
+    "symptoms": [
+      "virt-launcher-* pod in CrashLoopBackOff",
+      "VM exists but VMI shows Running then immediately stops",
+      "kubectl logs virt-launcher shows QEMU/KVM crash",
+      "VM workload suddenly becomes unavailable"
+    ],
+    "causes": [
+      "QEMU crash due to guest OS kernel panic",
+      "Memory overcommit causing OOMKill of virt-launcher",
+      "Disk I/O error on backing PVC (Ceph issue)",
+      "virt-launcher image incompatible with node kernel",
+      "CPU feature compatibility issue between host and guest"
+    ],
+    "investigation": [
+      "kubectl describe pod <virt-launcher-pod> -n <namespace>",
+      "kubectl logs <virt-launcher-pod> --previous -n <namespace>",
+      "kubectl logs <virt-launcher-pod> -c compute --previous -n <namespace>",
+      "kubectl get events -n <namespace> --sort-by='.lastTimestamp'",
+      "kubectl -n kubevirt logs <virt-handler-pod-on-same-node> --tail=100"
+    ],
+    "remediation": [
+      "For OOMKill: increase VM memory in VirtualMachine spec and restart",
+      "For disk I/O error: check Rook-Ceph cluster health, repair OSDs",
+      "For QEMU crash: check VM serial console log, may need guest OS investigation",
+      "Restart VM: kubectl patch vm <name> -n <ns> --type merge -p '{\"spec\":{\"running\":false}}' then true",
+      "If image incompatible: update KubeVirt version: kubectl -n kubevirt edit kubevirt kubevirt"
+    ],
+    "escalation": "Persistent QEMU crashes may indicate hardware issues. Escalate if crash recurs after restart without load."
+  },
+  {
+    "id": "RB-KV-003",
+    "title": "KubeVirt Live Migration Failing",
+    "tags": ["kubevirt", "migration", "live-migration", "vm"],
+    "symptoms": [
+      "kubectl get virtualmachineinstancemigration shows Failing state",
+      "VM migration stuck in Scheduling or Preparing state",
+      "Alert: KubeVirtVMIMigrationFailed",
+      "Node maintenance cannot complete because VM won't migrate"
+    ],
+    "causes": [
+      "Target node has insufficient resources",
+      "Network bandwidth too low for migration (large RAM VMs)",
+      "Migration timeout exceeded (default: 150s per GiB)",
+      "VirtualMachineInstance has migration-blocking devices (passthrough GPU, host disk)",
+      "virt-handler on target node not reachable"
+    ],
+    "investigation": [
+      "kubectl get vmim -A",
+      "kubectl describe vmim <migration-name> -n <namespace>",
+      "kubectl -n kubevirt get virtualmachineinstancemigration -o yaml",
+      "kubectl -n kubevirt logs deploy/virt-controller | grep migration",
+      "kubectl -n kubevirt get kubevirt kubevirt -o yaml | grep -A10 migrations"
+    ],
+    "remediation": [
+      "Cancel stuck migration: kubectl delete vmim <name> -n <namespace>",
+      "Check target node resources: kubectl describe node <target>",
+      "Increase migration timeout: edit KubeVirt CR spec.configuration.migrations.completionTimeoutPerGiB",
+      "For bandwidth: increase parallelMigrationsPerCluster limit or migrate during low-traffic window",
+      "If node draining: force evict the VM pod only as last resort (VM will restart cold)"
+    ],
+    "escalation": "If node cannot be drained for maintenance due to failed migrations, escalate to schedule downtime window."
+  },
+  {
+    "id": "RB-KV-004",
+    "title": "KubeVirt Components Down / virt-operator Not Running",
+    "tags": ["kubevirt", "operator", "control-plane"],
+    "symptoms": [
+      "kubectl -n kubevirt get pods shows virt-operator or virt-api in Error/CrashLoop",
+      "Cannot create or modify VirtualMachine objects",
+      "kubectl get vmi fails or VMs stuck in Pending state",
+      "Alert: KubeVirtComponentExceedsRequestedMemory or KubeVirtNoAvailableNodesToRunVMs"
+    ],
+    "causes": [
+      "KubeVirt upgrade in progress or failed",
+      "CRD version mismatch after cluster upgrade",
+      "virt-operator image pull failure",
+      "RBAC permissions revoked"
+    ],
+    "investigation": [
+      "kubectl -n kubevirt get pods",
+      "kubectl -n kubevirt describe pod <virt-operator-pod>",
+      "kubectl -n kubevirt logs deploy/virt-operator --tail=200",
+      "kubectl get kubevirt -n kubevirt -o yaml",
+      "kubectl get crd virtualmachines.kubevirt.io -o yaml | grep -i version"
+    ],
+    "remediation": [
+      "Restart virt-operator: kubectl -n kubevirt rollout restart deploy/virt-operator",
+      "Check KubeVirt CR status: kubectl -n kubevirt describe kubevirt kubevirt",
+      "If upgrade stuck: kubectl -n kubevirt patch kubevirt kubevirt --type merge -p '{\"spec\":{\"imageTag\":\"<version>\"}}'",
+      "Verify RBAC: kubectl get clusterrolebinding | grep kubevirt",
+      "Full reinstall only as last resort: preserve VMs by backing up VM CRs first"
+    ],
+    "escalation": "KubeVirt control plane outage prevents all VM operations. Existing running VMs continue to run but cannot be managed."
+  }
+]

@@ -1,0 +1,132 @@
+[
+  {
+    "id": "RB-OVN-001",
+    "title": "Kube-OVN Pod Network Unreachable / CNI Failure",
+    "tags": ["kube-ovn", "cni", "network", "pod"],
+    "symptoms": [
+      "Pods stuck in ContainerCreating with 'network: plugin type=\"kube-ovn\" failed'",
+      "New pods get no IP address",
+      "kubectl describe pod shows 'failed to create pod sandbox: rpc error'",
+      "Alert: KubeOVNPodNotReady or OVNControllerDown"
+    ],
+    "causes": [
+      "kube-ovn-cni daemonset pod not running on the node",
+      "OVS (Open vSwitch) daemon not running on node",
+      "kube-ovn-controller not running",
+      "Database (OVN Northbound/Southbound) unavailable",
+      "CNI binary missing from node"
+    ],
+    "investigation": [
+      "kubectl -n kube-system get pods -l app=kube-ovn-cni -o wide",
+      "kubectl -n kube-system get pods -l app=ovs",
+      "kubectl -n kube-system get pods -l app=kube-ovn-controller",
+      "kubectl -n kube-system logs -l app=kube-ovn-cni --tail=100",
+      "kubectl -n kube-system logs -l app=kube-ovn-controller --tail=100",
+      "# On node (SSH): ovs-vsctl show",
+      "# On node (SSH): ls /opt/cni/bin/kube-ovn"
+    ],
+    "remediation": [
+      "Restart kube-ovn-cni daemonset: kubectl -n kube-system rollout restart ds/kube-ovn-cni",
+      "Restart OVS daemonset: kubectl -n kube-system rollout restart ds/ovs-ovn",
+      "Restart controller: kubectl -n kube-system rollout restart deploy/kube-ovn-controller",
+      "If CNI binary missing: delete cni pod on that node to force reinstall",
+      "For OVN DB issues: kubectl -n kube-system rollout restart deploy/ovn-central",
+      "Check node OVS: SSH to node, 'systemctl status ovs-vswitchd' — restart if needed"
+    ],
+    "escalation": "CNI failure on a node prevents all new pod scheduling on that node. Multiple nodes affected is a cluster-wide network P1."
+  },
+  {
+    "id": "RB-OVN-002",
+    "title": "Kube-OVN Subnet / IP Allocation Failure",
+    "tags": ["kube-ovn", "subnet", "ip", "ippool"],
+    "symptoms": [
+      "Pods getting duplicate IPs or wrong subnet IPs",
+      "kubectl get subnet shows subnet in NotReady state",
+      "New namespace pods cannot communicate with other namespaces",
+      "Alert: KubeOVNSubnetNotReady"
+    ],
+    "causes": [
+      "Subnet CIDR overlap with existing subnet or node network",
+      "IP pool exhaustion (subnet is full)",
+      "kube-ovn-controller failed to sync subnet to OVN",
+      "Subnet CIDRs conflict with MetalLB pool or cluster service CIDR"
+    ],
+    "investigation": [
+      "kubectl get subnet -o wide",
+      "kubectl describe subnet <name>",
+      "kubectl get ippool",
+      "kubectl -n kube-system logs deploy/kube-ovn-controller | grep -i 'subnet\\|error' | tail -50",
+      "kubectl get pod -A -o wide | awk '{print $7}' | sort | uniq -d  # find duplicate IPs"
+    ],
+    "remediation": [
+      "For subnet NotReady: kubectl -n kube-system rollout restart deploy/kube-ovn-controller",
+      "For IP exhaustion: expand subnet CIDR or create new subnet for overflow namespaces",
+      "For CIDR conflicts: coordinate with network team to redesign subnet layout",
+      "Trigger resync: kubectl -n kube-system exec deploy/kube-ovn-controller -- /kube-ovn/kube-ovn-controller --logtostderr --v=4",
+      "For duplicate IPs: delete the affected pod — controller will re-assign unique IP on restart"
+    ],
+    "escalation": "Subnet failures cause namespace-level network isolation failures. Escalate to network team if CIDR redesign needed."
+  },
+  {
+    "id": "RB-OVN-003",
+    "title": "Kube-OVN OVN Controller / Northbound DB Down",
+    "tags": ["kube-ovn", "ovn", "northbound", "controller"],
+    "symptoms": [
+      "kubectl -n kube-system get pods shows ovn-central in CrashLoopBackOff",
+      "All Kube-OVN operations failing",
+      "Network policies not being enforced",
+      "kube-ovn-controller logs show 'failed to connect to OVN NB DB'"
+    ],
+    "causes": [
+      "ovn-central pod crashed or evicted",
+      "RAFT election failure in OVN DB cluster (if HA mode)",
+      "Disk full on node running ovn-central (OVN DB uses disk)",
+      "Version incompatibility after Kube-OVN upgrade"
+    ],
+    "investigation": [
+      "kubectl -n kube-system get pods -l app=ovn-central",
+      "kubectl -n kube-system describe pod <ovn-central-pod>",
+      "kubectl -n kube-system logs <ovn-central-pod> --previous",
+      "kubectl -n kube-system logs <ovn-central-pod> -c ovn-northd --tail=100",
+      "kubectl -n kube-system logs <ovn-central-pod> -c ovnkube-db --tail=100"
+    ],
+    "remediation": [
+      "Restart ovn-central: kubectl -n kube-system delete pod -l app=ovn-central",
+      "If disk full: clean up old logs on the node, expand PVC if persistent storage used",
+      "For RAFT split-brain: delete all ovn-central pods simultaneously to force re-election",
+      "Verify recovery: kubectl -n kube-system exec <ovn-central-pod> -- ovn-nbctl show"
+    ],
+    "escalation": "OVN DB outage causes complete network control plane failure. Existing connections continue but no new network policy changes take effect."
+  },
+  {
+    "id": "RB-OVN-004",
+    "title": "Kube-OVN Security Group / Network Policy Not Enforced",
+    "tags": ["kube-ovn", "security-group", "network-policy", "acl"],
+    "symptoms": [
+      "Traffic permitted or blocked incorrectly",
+      "NetworkPolicy objects exist but not taking effect",
+      "Kube-OVN SecurityGroup CR in error state",
+      "Pods can reach services they should be blocked from"
+    ],
+    "causes": [
+      "kube-ovn-controller not syncing ACLs to OVN",
+      "SecurityGroup CRD not supported by installed Kube-OVN version",
+      "Conflicting NetworkPolicy and SecurityGroup rules",
+      "OVN ACL flush happened accidentally"
+    ],
+    "investigation": [
+      "kubectl get securitygroup -A",
+      "kubectl describe securitygroup <name>",
+      "kubectl get networkpolicy -A",
+      "kubectl -n kube-system logs deploy/kube-ovn-controller | grep -i 'acl\\|security' | tail -50",
+      "# On OVN node (SSH): ovn-nbctl acl-list <logical-switch>"
+    ],
+    "remediation": [
+      "Force ACL resync: kubectl -n kube-system rollout restart deploy/kube-ovn-controller",
+      "Delete and recreate the SecurityGroup/NetworkPolicy",
+      "Verify OVN ACLs directly: exec into ovn-central pod, run ovn-nbctl acl-list",
+      "Check Kube-OVN version supports SecurityGroup feature"
+    ],
+    "escalation": "Incorrect network policy enforcement is a security issue. Escalate to security team if sensitive workloads are exposed."
+  }
+]

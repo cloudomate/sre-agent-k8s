@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sre-agent-config
+  namespace: sre-agent
+data:
+  # LLM — any OpenAI-compatible endpoint
+  # llama.cpp in-cluster: http://llamacpp.sre-agent.svc.cluster.local:11434/v1
+  # OpenAI:               https://api.openai.com/v1
+  # vLLM in-cluster:      http://vllm.sre-agent.svc.cluster.local:8000/v1
+  LLM_BASE_URL: "http://llamacpp.sre-agent.svc.cluster.local:11434/v1"
+  LLM_MODEL: "qwen3.gguf"
+  LLM_EMBED_MODEL: "nomic-embed-text"
+  AGENT_MAX_STEPS: "12"
+  LLM_TIMEOUT: "300"
+
+  # Kubernetes — use in-cluster ServiceAccount (no kubeconfig needed)
+  K8S_IN_CLUSTER: "true"
+  K8S_NAMESPACE: "default"
+
+  # Logging backend: kubernetes | loki | journald
+  LOG_BACKEND: "kubernetes"
+  LOKI_URL: ""
+  LOG_MAX_LINES: "200"
+
+  # Metrics backend: prometheus | none
+  METRICS_BACKEND: "prometheus"
+  # kube-prometheus-stack default service URLs (namespace: monitoring)
+  PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+  ALERTMANAGER_URL: "http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093"
+
+  # Report channels: stdout,file,slack,webhook,sms,whatsapp,email (comma-separated)
+  REPORT_CHANNELS: "stdout,file,email"
+  REPORT_DIR: "/app/reports"
+  RUNBOOK_DIR: "/app/runbooks"
+
+  # SMS / WhatsApp via Twilio (credentials go in secret.yaml)
+  TWILIO_FROM: ""          # e.g. +15551234567
+  SMS_TO: ""               # comma-separated E.164 numbers, e.g. +15559876543,+44701234567
+  WHATSAPP_TO: ""          # comma-separated E.164 numbers (whatsapp: prefix added automatically)
+
+  # Email via SMTP — using local test relay (MailHog/Mailpit, no auth, no TLS)
+  SMTP_HOST: "192.168.4.102"
+  SMTP_PORT: "1025"
+  SMTP_TLS: "false"
+  SMTP_USER: ""
+  EMAIL_FROM: "sre-agent@datacore.lan"
+  EMAIL_TO: "admin@datacore.lan"
+
+  # Kubernetes event watcher — auto-triggers investigations on Warning events
+  WATCH_EVENTS: "true"
+  # Cooldown in seconds before re-investigating the same service (default 900 = 15 min)
+  WATCH_COOLDOWN_SECONDS: "900"
+
+  LOG_LEVEL: "INFO"
+  PORT: "8080"

@@ -1,0 +1,250 @@
+[
+  {
+    "id": "RB-ISMP-001",
+    "title": "ISMP API Server Down or Unhealthy",
+    "tags": ["ismp", "apiserver", "api", "down", "unhealthy", "jwt", "gin", "8443"],
+    "summary": "The ISMP API server (ismp-apiserver, port 8443) is not responding or failing health checks. All VM, storage, network, and auth operations will fail. The UI will show connection errors.",
+    "steps": [
+      "Check pod status: kubectl get pods -n ismp-system -l app=ismp-apiserver",
+      "Check endpoint health: kubectl exec -n ismp-system deploy/ismp-apiserver -- curl -sk https://localhost:8443/healthz",
+      "Check recent logs for Gin framework errors: kubectl logs -n ismp-system deploy/ismp-apiserver --tail=100",
+      "Look for 'failed to initialize' errors in logs (OIDC, Prometheus client — non-blocking but indicate config issues)",
+      "Check if Prometheus URL is reachable: kubectl exec -n ismp-system deploy/ismp-apiserver -- curl http://prometheus-kube-prometheus-prometheus.monitoring.svc:9090/-/healthy",
+      "Check TLS certificate validity if using custom certs: kubectl get secret -n ismp-system | grep tls",
+      "If CrashLoopBackOff: kubectl logs -n ismp-system deploy/ismp-apiserver --previous",
+      "Check resource pressure: kubectl top pods -n ismp-system",
+      "Verify JWT signing secret is present: kubectl get secret -n ismp-system | grep ismp-jwt",
+      "Check kubernetes events: kubectl get events -n ismp-system --sort-by=lastTimestamp | tail -20"
+    ],
+    "causes": [
+      "JWT signing secret missing or corrupted",
+      "TLS certificate expired for port 8443",
+      "Prometheus sidecar URL unreachable (non-fatal but causes 500s on /metrics endpoints)",
+      "OOMKilled due to 256Mi memory limit under high request load",
+      "OIDC provider config invalid (blocks startup if required)",
+      "All 3 replicas on same node — node failure takes down API"
+    ]
+  },
+  {
+    "id": "RB-ISMP-002",
+    "title": "ISMP Operator Reconciliation Failure",
+    "tags": ["ismp", "operator", "controller", "reconcile", "crashing", "crashloop", "kubevirt", "ceph"],
+    "summary": "The ISMP operator controllers are failing to reconcile CRDs (VMs, Volumes, LoadBalancers). VMs may not start, volumes may not attach, and load balancers may not provision. Operator runs on control-plane nodes only.",
+    "steps": [
+      "Check operator pod status: kubectl get pods -n ismp-system -l app=ismp-operator",
+      "Check operator health probe: kubectl exec -n ismp-system deploy/ismp-operator -- curl -s http://localhost:8081/healthz",
+      "Check readiness: kubectl exec -n ismp-system deploy/ismp-operator -- curl -s http://localhost:8081/readyz",
+      "Read operator logs: kubectl logs -n ismp-system deploy/ismp-operator --tail=200",
+      "Look for controller-specific errors — 'VirtualMachineReconciler', 'VolumeAttachmentReconciler', 'LoadBalancerReconciler'",
+      "Check if KubeVirt is healthy: kubectl get pods -n kubevirt",
+      "Check if Rook-Ceph is healthy: kubectl get cephcluster -A && kubectl get pods -n rook-ceph | grep -v Running",
+      "Check if MetalLB is healthy (for LoadBalancer controller): kubectl get pods -n metallb-system",
+      "Verify leader election is working (if enabled): kubectl get lease -n ismp-system",
+      "Check ISMP CRD status for stuck resources: kubectl get virtualmachine,volume,loadbalancer -A",
+      "Check controller events: kubectl get events -n ismp-system --field-selector reason=FailedReconcile"
+    ],
+    "causes": [
+      "KubeVirt unavailable — VM controller cannot create/modify VirtualMachine objects",
+      "Rook-Ceph degraded — Volume controller cannot provision or attach block devices",
+      "MetalLB missing IP pool — LoadBalancer controller cannot allocate external IPs",
+      "RBAC permission revoked for ismp-operator ServiceAccount",
+      "CRD schema mismatch after upgrade — reconcile loop panics",
+      "Template referenced in VirtualMachine spec does not exist (ISMPVMTemplate not found)",
+      "Leader election lock stuck after operator crash — another replica cannot take over"
+    ]
+  },
+  {
+    "id": "RB-ISMP-003",
+    "title": "ISMP VM Failed or High VM Failure Rate",
+    "tags": ["ismp", "vm", "virtual machine", "failed", "error", "kubevirt", "vmi", "ISMPVMFailed", "ISMPVMHighFailureRate"],
+    "summary": "One or more ISMP VirtualMachine CRDs are in Failed state, or >10% of VMs are failing (ISMPVMHighFailureRate alert). Maps to KubeVirt VMI objects under the hood.",
+    "steps": [
+      "List failed ISMP VMs: kubectl get virtualmachine -A -o wide | grep -v Running",
+      "Get ISMP VM details: kubectl describe virtualmachine <name> -n <ns>",
+      "Find the corresponding KubeVirt VMI: kubectl get vmi -n <ns>",
+      "Describe the VMI for KubeVirt-level events: kubectl describe vmi <name> -n <ns>",
+      "Check the virt-launcher pod: kubectl get pods -n <ns> -l kubevirt.io/vm=<name>",
+      "Read virt-launcher logs: kubectl logs -n <ns> -l kubevirt.io/vm=<name>",
+      "Check if the VM uses a VolumeAttachment — verify volumes are attached: kubectl get volumeattachment -n <ns>",
+      "Check if the boot image exists: kubectl get virtualmachineimage -A | grep <image-name>",
+      "Check if the template is valid: kubectl get virtualmachinetemplate -A | grep <template>",
+      "Check node resources where VM was scheduled: kubectl describe node <node-name> | grep -A5 Allocated",
+      "Check ISMP cluster health for systemic issues: kubectl get clusterhealth -A",
+      "Check ISMP operator logs for VM reconcile errors: kubectl logs -n ismp-system deploy/ismp-operator | grep VirtualMachine"
+    ],
+    "causes": [
+      "Boot disk/image not available or RBD volume not attached",
+      "Insufficient CPU/memory on the scheduled node (KubeVirt live migration may help)",
+      "VirtualMachineTemplate referenced does not exist or has changed",
+      "KubeVirt version mismatch with ISMP operator",
+      "VolumeAttachment controller failed to mount Ceph RBD block device to node",
+      "VM migration failed due to network or storage issue",
+      "Node running VM went NotReady — VM should live-migrate but may get stuck"
+    ]
+  },
+  {
+    "id": "RB-ISMP-004",
+    "title": "ISMP Disk Health Warning or Critical",
+    "tags": ["ismp", "disk", "health", "smart", "ISMPDiskFailing", "ISMPDiskFailed", "ceph", "osd", "storage"],
+    "summary": "ISMPDiskFailing or ISMPDiskFailed alert firing. DiskHealth CRD shows a disk in Warning or Critical state based on SMART data. May indicate imminent hardware failure.",
+    "steps": [
+      "List disk health status: kubectl get diskhealth -A -o wide",
+      "Describe failing disk: kubectl describe diskhealth <name> -n <ns>",
+      "Check which node the disk is on from the DiskHealth spec",
+      "Check SMART details from the status conditions on the DiskHealth object",
+      "Check Ceph OSD status for that disk: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph osd status",
+      "Check Ceph overall health: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status",
+      "If Ceph OSD is down: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph osd tree",
+      "Check if data is being rebalanced away from the failing OSD: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph pg stat",
+      "Check if any volumes use this disk: kubectl get volume -A | grep <node-name>",
+      "For critical disks, check if Ceph has enough replicas: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph osd pool ls detail",
+      "Check ISMP monitoring API: curl -sk -H 'Authorization: Bearer <jwt>' https://<ismp-api>/api/v1/disk-health"
+    ],
+    "causes": [
+      "Physical disk developing bad sectors (SMART reallocated sector count increasing)",
+      "Disk temperature exceeding threshold",
+      "NVMe wear indicator approaching end-of-life",
+      "Ceph OSD crashed due to underlying disk I/O errors",
+      "Disk controller firmware issue causing intermittent failures",
+      "RAID controller reporting disk failure in pass-through mode"
+    ]
+  },
+  {
+    "id": "RB-ISMP-005",
+    "title": "ISMP Node Not Ready",
+    "tags": ["ismp", "node", "notready", "ISMPNodeNotReady", "ISMPAllNodesDown", "kubelet", "pressure"],
+    "summary": "ISMPNodeNotReady or ISMPAllNodesDown alert firing. ISMP NodeHealth CRD shows node(s) not Ready. VMs on the node may be evicted or stuck.",
+    "steps": [
+      "Check ISMP node health: kubectl get nodehealth -A -o wide",
+      "Describe affected node health: kubectl describe nodehealth <name> -n <ns>",
+      "Check Kubernetes node status: kubectl describe node <node-name>",
+      "Look for pressure conditions: MemoryPressure, DiskPressure, PIDPressure in node conditions",
+      "Check kubelet status via ISMP diagnostic (if node is accessible): check systemctl status kubelet via run_diagnostic_cmd",
+      "Check if VMs were live-migrated away: kubectl get vmi -A -o wide | grep <node-name>",
+      "Check if node is in maintenance mode via ISMP API: GET /api/v1/nodes/<name>/status",
+      "Check node metrics: kubectl top node <node-name>",
+      "Check kube-ovn connectivity from the node: kubectl get pods -n kube-system -o wide | grep <node-name>",
+      "Check ISMP cluster health: kubectl get clusterhealth -A",
+      "Check recent events: kubectl get events -A --field-selector involvedObject.name=<node-name>"
+    ],
+    "causes": [
+      "Kubelet crashed or stopped on the node",
+      "Network partition — node cannot reach API server (kube-ovn issue on Flatcar)",
+      "Disk pressure from container images or log accumulation (Flatcar /var on tmpfs for PXE-booted nodes)",
+      "Memory pressure from VMs exceeding host memory",
+      "Ceph OSD on node consuming all memory/CPU",
+      "Node kernel panic or hardware crash",
+      "BMC power cycle triggered outside of ISMP (manual intervention)"
+    ]
+  },
+  {
+    "id": "RB-ISMP-006",
+    "title": "ISMP Volume or Storage Failing",
+    "tags": ["ismp", "volume", "storage", "ceph", "rbd", "pvc", "ISMPVolumesFailing", "attachment", "volumeattachment"],
+    "summary": "ISMPVolumesFailing alert firing, or Volume/VolumeAttachment CRDs stuck in error state. Block storage backed by Ceph RBD is unavailable.",
+    "steps": [
+      "List ISMP volumes in error: kubectl get volume -A | grep -v Ready",
+      "Describe failing volume: kubectl describe volume <name> -n <ns>",
+      "Check VolumeAttachment status if a VM is trying to mount: kubectl get volumeattachment -A",
+      "Check Ceph overall health: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status",
+      "Check Ceph OSD status: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph osd status",
+      "Check if Ceph pool is full: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph df",
+      "Check RBD image exists: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- rbd ls <pool>",
+      "Check if PVC exists for the volume: kubectl get pvc -n <ns>",
+      "Check Rook-Ceph operator logs for provisioning errors: kubectl logs -n rook-ceph deploy/rook-ceph-operator --tail=100",
+      "Check if CSI driver is healthy: kubectl get pods -n rook-ceph | grep csi",
+      "Check ISMP operator volume controller logs: kubectl logs -n ismp-system deploy/ismp-operator | grep -i volume"
+    ],
+    "causes": [
+      "Ceph cluster in HEALTH_WARN or HEALTH_ERR state (OSD down, PG degraded)",
+      "Ceph pool at capacity — cannot allocate new RBD images",
+      "Rook-Ceph CSI driver not running (csi-rbdplugin DaemonSet)",
+      "Network partition between node and Ceph storage network (bond1 / storage_ip down)",
+      "RBD image locked by another process (VM ungraceful shutdown without releasing lock)",
+      "StorageClass pointing to non-existent Ceph pool",
+      "VolumeAttachment timeout — Ceph map operation timed out on node"
+    ]
+  },
+  {
+    "id": "RB-ISMP-007",
+    "title": "ISMP Cluster Health Degraded or Critical",
+    "tags": ["ismp", "cluster", "health", "degraded", "critical", "ISMPClusterDegraded", "ISMPClusterCritical", "clusterhealth"],
+    "summary": "ISMPClusterDegraded or ISMPClusterCritical alert is firing. The ClusterHealth CRD shows overall platform health is below acceptable threshold. Multiple subsystems may be affected.",
+    "steps": [
+      "Get cluster health overview: kubectl get clusterhealth -A -o yaml",
+      "Check all ISMP components: kubectl get pods -n ismp-system",
+      "Check node health summary: kubectl get nodehealth -A",
+      "Check disk health summary: kubectl get diskhealth -A",
+      "Check VM failure rate: kubectl get virtualmachine -A | grep -v Running | wc -l",
+      "Check volume failures: kubectl get volume -A | grep -v Ready",
+      "Check ISMP monitoring API for full picture: GET /api/v1/cluster-health",
+      "Check Prometheus for underlying metrics: query ismp_cluster_health_status",
+      "Check if this correlates with a recent deployment: kubectl rollout history deploy -n ismp-system",
+      "Check all Kubernetes node status: kubectl get nodes",
+      "Check Ceph health: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status",
+      "Look for cascading failures — start with nodes, then Ceph, then VMs"
+    ],
+    "causes": [
+      "Multiple node failures creating quorum loss in Ceph MONs",
+      "Cascading disk failures exceeding Ceph replica count",
+      "Network partition splitting cluster into two segments",
+      "etcd quorum lost — Kubernetes API degraded",
+      "Mass VM migration triggered by node failure consuming all resources",
+      "Recent ISMP operator upgrade with CRD incompatibility"
+    ]
+  },
+  {
+    "id": "RB-ISMP-008",
+    "title": "ISMP Authentication Failure (JWT / OIDC / LDAP)",
+    "tags": ["ismp", "auth", "authentication", "jwt", "oidc", "ldap", "login", "403", "401", "token"],
+    "summary": "Users cannot log in to ISMP. API returning 401 Unauthorized or 403 Forbidden. May affect JWT, OIDC (Azure AD, Google), or LDAP/AD login.",
+    "steps": [
+      "Test login API directly: curl -sk -X POST https://<ismp-api>/api/v1/auth/login -d '{\"username\":\"admin\",\"password\":\"...\"}' | jq .status",
+      "Check API server logs for auth errors: kubectl logs -n ismp-system deploy/ismp-apiserver | grep -i 'auth\\|jwt\\|oidc\\|ldap\\|forbidden'",
+      "Check if OIDC config CRD is valid: kubectl get oidcconfig -A -o yaml",
+      "Check if LDAP config CRD is valid: kubectl get ldapconfig -A -o yaml",
+      "Test OIDC provider reachability from API pod: kubectl exec -n ismp-system deploy/ismp-apiserver -- curl -s <oidc-issuer>/.well-known/openid-configuration",
+      "Test LDAP reachability: kubectl exec -n ismp-system deploy/ismp-apiserver -- nc -zv <ldap-host> 389",
+      "Check if JWT signing secret is present and unchanged: kubectl get secret -n ismp-system | grep jwt",
+      "Check if admin user exists: kubectl get ismpuser -A | grep admin",
+      "Check token expiry — default access token may be short-lived; test refresh: POST /api/v1/auth/refresh",
+      "Check if RBAC role assignment is correct: kubectl get ismpuser <name> -o yaml | grep role"
+    ],
+    "causes": [
+      "JWT signing secret rotated without invalidating existing sessions",
+      "OIDC provider (Azure AD, Google) certificate changed or provider URL changed",
+      "LDAP/AD server unreachable or certificate expired",
+      "Clock skew between API server pods and OIDC provider >5 minutes",
+      "ISMPUser CRD deleted accidentally",
+      "OIDC config CRD has wrong clientID or clientSecret after IdP app re-registration",
+      "LDAP bind password changed in AD but not updated in LDAPConfig CRD"
+    ]
+  },
+  {
+    "id": "RB-ISMP-009",
+    "title": "ISMP Load Balancer Not Provisioning",
+    "tags": ["ismp", "loadbalancer", "metallb", "ip", "external", "service", "networking", "kube-ovn"],
+    "summary": "ISMP LoadBalancer CRD is stuck in Pending/Error state. External IP not assigned. Services using ISMP LoadBalancers are not reachable externally.",
+    "steps": [
+      "List ISMP load balancers: kubectl get loadbalancer -A",
+      "Describe the failing LB: kubectl describe loadbalancer <name> -n <ns>",
+      "Check corresponding Kubernetes Service: kubectl get svc -n <ns> | grep <name>",
+      "Check if MetalLB is healthy: kubectl get pods -n metallb-system",
+      "Check MetalLB IP pool availability: kubectl get ipaddresspool -n metallb-system",
+      "Check MetalLB L2 advertisement or BGP config: kubectl get l2advertisement,bgppeer -n metallb-system",
+      "Check MetalLB speaker logs: kubectl logs -n metallb-system -l app=metallb,component=speaker --tail=50",
+      "Check MetalLB controller logs: kubectl logs -n metallb-system -l app=metallb,component=controller --tail=50",
+      "Check ISMP operator LB controller logs: kubectl logs -n ismp-system deploy/ismp-operator | grep -i loadbalancer",
+      "Check EndpointSlice created by ISMP: kubectl get endpointslice -n <ns> | grep <name>",
+      "Verify Kube-OVN is routing traffic correctly: kubectl get pods -n kube-system | grep kube-ovn"
+    ],
+    "causes": [
+      "MetalLB IP address pool exhausted — no free IPs in the configured range",
+      "MetalLB speaker not running on node where endpoints live",
+      "Kube-OVN subnet conflict with MetalLB IP pool",
+      "ISMP LoadBalancer CRD requesting IP outside the configured MetalLB pool",
+      "L2 advertisement disabled on the network segment (MetalLB L2Advertisement resource missing)",
+      "EndpointSlice not created because ISMP operator LB controller is failing"
+    ]
+  }
+]

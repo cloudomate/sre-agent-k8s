@@ -1,0 +1,34 @@
+# Internal ClusterIP service — for in-cluster access and Ingress
+apiVersion: v1
+kind: Service
+metadata:
+  name: sre-agent
+  namespace: sre-agent
+  labels:
+    app: sre-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: sre-agent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# External LoadBalancer — direct external access without Ingress
+# Remove this if you prefer to use Ingress only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sre-agent-external
+  namespace: sre-agent
+  labels:
+    app: sre-agent
+spec:
+  type: LoadBalancer
+  selector:
+    app: sre-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

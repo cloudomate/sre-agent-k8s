@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sre-agent.name" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sre-agent.labels" . | nindent 4 }}
+data:
+  LLM_BASE_URL: {{ include "sre-agent.llmBaseUrl" . | quote }}
+  LLM_MODEL: {{ .Values.llm.model | quote }}
+  LLM_EMBED_MODEL: {{ .Values.llm.embedModel | quote }}
+  LLM_TIMEOUT: {{ .Values.llm.timeout | quote }}
+  AGENT_MAX_STEPS: {{ .Values.llm.maxSteps | quote }}
+  K8S_IN_CLUSTER: {{ .Values.kubernetes.inCluster | quote }}
+  K8S_NAMESPACE: {{ .Values.kubernetes.namespace | quote }}
+  LOG_BACKEND: {{ .Values.log.backend | quote }}
+  LOKI_URL: {{ .Values.log.lokiUrl | quote }}
+  LOG_MAX_LINES: {{ .Values.log.maxLines | quote }}
+  METRICS_BACKEND: "prometheus"
+  PROMETHEUS_URL: {{ .Values.prometheus.url | quote }}
+  ALERTMANAGER_URL: {{ .Values.alertmanager.url | quote }}
+  REPORT_CHANNELS: {{ .Values.report.channels | quote }}
+  REPORT_DIR: {{ .Values.report.dir | quote }}
+  RUNBOOK_DIR: {{ .Values.report.runbookDir | quote }}
+  SMTP_HOST: {{ .Values.smtp.host | quote }}
+  SMTP_PORT: {{ .Values.smtp.port | quote }}
+  SMTP_TLS: {{ .Values.smtp.tls | quote }}
+  SMTP_USER: {{ .Values.smtp.user | quote }}
+  EMAIL_FROM: {{ .Values.smtp.from | quote }}
+  EMAIL_TO: {{ .Values.smtp.to | quote }}
+  TWILIO_FROM: {{ .Values.twilio.from | quote }}
+  SMS_TO: {{ .Values.twilio.smsTo | quote }}
+  WHATSAPP_TO: {{ .Values.twilio.whatsappTo | quote }}
+  WATCH_EVENTS: {{ .Values.watchEvents.enabled | quote }}
+  WATCH_COOLDOWN_SECONDS: {{ .Values.watchEvents.cooldownSeconds | quote }}
+  LOG_LEVEL: {{ .Values.logLevel | quote }}
+  PORT: {{ .Values.service.port | quote }}

@@ -1,0 +1,165 @@
+[
+  {
+    "id": "RB-PROM-001",
+    "title": "Prometheus Storage Full / TSDB Compaction Issues",
+    "tags": ["prometheus", "storage", "tsdb", "monitoring"],
+    "symptoms": [
+      "Alert: PrometheusLocalStorageCompactionFailed or PrometheusNotIngestingSamples",
+      "Prometheus UI shows 'Error on ingesting samples that are too old or out of order'",
+      "kubectl -n monitoring describe pod prometheus-* shows OOMKilled",
+      "Metrics gaps in Grafana dashboards"
+    ],
+    "causes": [
+      "Persistent volume for Prometheus is full",
+      "Retention period too long for the available storage",
+      "High cardinality metrics causing excessive TSDB growth",
+      "TSDB compaction falling behind (Prometheus overloaded)"
+    ],
+    "investigation": [
+      "kubectl -n monitoring get pvc | grep prometheus",
+      "kubectl -n monitoring exec -it prometheus-kube-prometheus-stack-prometheus-0 -- df -h /prometheus",
+      "kubectl -n monitoring describe pod prometheus-kube-prometheus-stack-prometheus-0",
+      "kubectl -n monitoring logs prometheus-kube-prometheus-stack-prometheus-0 --tail=100",
+      "# Check TSDB stats via API: curl http://localhost:9090/api/v1/label/__name__/values | jq length"
+    ],
+    "remediation": [
+      "Expand PVC: kubectl -n monitoring patch pvc <pvc-name> -p '{\"spec\":{\"resources\":{\"requests\":{\"storage\":\"50Gi\"}}}}'",
+      "Reduce retention: edit PrometheusRule CR or Prometheus spec: spec.retention: 7d",
+      "Find high-cardinality metrics: Prometheus UI > Status > TSDB Status",
+      "Delete old blocks manually: exec into pod, rm -rf /prometheus/chunks_head/*",
+      "If OOMKilled: increase memory limit in Prometheus spec: spec.resources.limits.memory",
+      "Restart Prometheus (non-destructive): kubectl -n monitoring rollout restart statefulset/prometheus-kube-prometheus-stack-prometheus"
+    ],
+    "escalation": "Prometheus storage full causes monitoring blindness. All alerts stop working. Escalate immediately — treat as P1 for observability."
+  },
+  {
+    "id": "RB-PROM-002",
+    "title": "Prometheus Scrape Failures / Target Down",
+    "tags": ["prometheus", "scrape", "target", "servicemonitor"],
+    "symptoms": [
+      "Alert: PrometheusTargetMissing firing",
+      "Prometheus UI > Targets shows targets in DOWN state",
+      "Missing metrics for specific services in Grafana",
+      "Alert: KubeServiceDown or specific service alerts silent"
+    ],
+    "causes": [
+      "ServiceMonitor label selector not matching Service labels",
+      "Service or pod not running (unrelated to Prometheus)",
+      "Network policy blocking Prometheus scrape port",
+      "TLS certificate mismatch on scrape endpoint",
+      "Metrics endpoint path changed in new service version"
+    ],
+    "investigation": [
+      "kubectl -n monitoring get servicemonitor -o yaml",
+      "kubectl -n monitoring logs prometheus-kube-prometheus-stack-prometheus-0 | grep -i 'scrape error' | tail -50",
+      "# Prometheus UI: Status > Targets — check exact error message",
+      "kubectl get svc -n <target-namespace> -o yaml | grep -i label",
+      "kubectl get networkpolicy -A  # check if scrape port is blocked"
+    ],
+    "remediation": [
+      "Fix ServiceMonitor selector: kubectl -n monitoring edit servicemonitor <name>",
+      "Verify service labels match selector: kubectl get svc <name> -n <ns> --show-labels",
+      "Test scrape manually: kubectl -n monitoring exec -it prometheus-* -- curl http://<service>:<port>/metrics",
+      "For network policy: add egress rule allowing Prometheus to reach the target port",
+      "For TLS issues: update ServiceMonitor spec.endpoints.tlsConfig"
+    ],
+    "escalation": "Missing scrape targets for critical services should be escalated to the owning team to fix their ServiceMonitor configuration."
+  },
+  {
+    "id": "RB-PROM-003",
+    "title": "Alertmanager Not Sending Notifications",
+    "tags": ["alertmanager", "notifications", "alerts", "monitoring"],
+    "symptoms": [
+      "Alerts firing in Prometheus but no notifications received (no Slack/email/webhook)",
+      "Alertmanager UI shows alerts but Status is 'Active' without any receivers",
+      "Alert: AlertmanagerFailedToSendAlerts",
+      "SRE Agent not receiving Alertmanager webhook events"
+    ],
+    "causes": [
+      "Alertmanager configuration error (wrong webhook URL, expired credentials)",
+      "Network connectivity to receiver endpoint from cluster",
+      "Alert silenced in Alertmanager",
+      "Alert inhibited by another alert",
+      "Alertmanager pod not running"
+    ],
+    "investigation": [
+      "kubectl -n monitoring get pods -l app.kubernetes.io/name=alertmanager",
+      "kubectl -n monitoring logs alertmanager-kube-prometheus-stack-alertmanager-0 --tail=100",
+      "kubectl -n monitoring get secret alertmanager-kube-prometheus-stack-alertmanager -o yaml",
+      "# Alertmanager UI: Status > Config — verify config is valid",
+      "# Check silences: Alertmanager UI > Silences",
+      "# Test webhook: kubectl -n monitoring exec <alertmanager-pod> -- curl -X POST http://sre-agent.sre-agent.svc.cluster.local:8080/incidents/webhook/alertmanager"
+    ],
+    "remediation": [
+      "Fix Alertmanager config: edit the secret alertmanager-kube-prometheus-stack-alertmanager",
+      "Reload config: kubectl -n monitoring exec alertmanager-* -- kill -HUP 1",
+      "Remove bad silences from Alertmanager UI",
+      "Test webhook manually to verify SRE Agent is reachable",
+      "Restart Alertmanager: kubectl -n monitoring rollout restart statefulset/alertmanager-*"
+    ],
+    "escalation": "Silent alerting is a monitoring failure. All incidents may go unnoticed. Treat as P1 for incident management."
+  },
+  {
+    "id": "RB-PROM-004",
+    "title": "Grafana Dashboard Not Loading / Data Source Error",
+    "tags": ["grafana", "dashboard", "datasource", "monitoring"],
+    "symptoms": [
+      "Grafana shows 'Error: 502 Bad Gateway' or 'No data'",
+      "Dashboard panels show 'datasource not found'",
+      "Grafana pod in CrashLoopBackOff",
+      "Users cannot access Grafana UI"
+    ],
+    "causes": [
+      "Grafana pod restarted and lost session (non-persistent SQLite DB)",
+      "Prometheus data source URL changed",
+      "Grafana PVC full (if persistent storage configured)",
+      "Grafana version incompatible with dashboard JSON",
+      "Memory limit too low causing OOMKill"
+    ],
+    "investigation": [
+      "kubectl -n monitoring get pods -l app.kubernetes.io/name=grafana",
+      "kubectl -n monitoring describe pod <grafana-pod>",
+      "kubectl -n monitoring logs <grafana-pod> --tail=100",
+      "kubectl -n monitoring get pvc | grep grafana",
+      "kubectl -n monitoring get svc | grep grafana"
+    ],
+    "remediation": [
+      "Restart Grafana: kubectl -n monitoring rollout restart deploy/kube-prometheus-stack-grafana",
+      "Verify data source: Grafana UI > Configuration > Data Sources > Test",
+      "Fix Prometheus URL in data source if changed",
+      "If PVC full: expand it or purge old dashboard versions",
+      "Increase memory: kubectl -n monitoring edit deploy/kube-prometheus-stack-grafana, add resources.limits.memory"
+    ],
+    "escalation": "Grafana outage prevents dashboard access. Alert delivery via Alertmanager is unaffected. Notify on-call team of visibility gap."
+  },
+  {
+    "id": "RB-PROM-005",
+    "title": "kube-state-metrics or node-exporter Not Running",
+    "tags": ["prometheus", "kube-state-metrics", "node-exporter", "metrics"],
+    "symptoms": [
+      "Alert: KubeStateMetricsDown or NodeExporterDown",
+      "Missing Kubernetes object metrics (pod count, deployment replicas, etc.)",
+      "Missing node metrics (CPU, memory, disk, network)",
+      "Grafana 'Kubernetes / Nodes' dashboard shows no data"
+    ],
+    "causes": [
+      "DaemonSet or Deployment pod evicted or crashed",
+      "Resource limits too tight (OOMKill)",
+      "Node exporter port conflict",
+      "RBAC permission revoked for kube-state-metrics"
+    ],
+    "investigation": [
+      "kubectl -n monitoring get pods -l app.kubernetes.io/name=kube-state-metrics",
+      "kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus-node-exporter",
+      "kubectl -n monitoring describe pod <kube-state-metrics-pod>",
+      "kubectl -n monitoring logs <node-exporter-pod> --tail=50"
+    ],
+    "remediation": [
+      "Restart kube-state-metrics: kubectl -n monitoring rollout restart deploy/kube-prometheus-stack-kube-state-metrics",
+      "Restart node-exporter: kubectl -n monitoring rollout restart ds/kube-prometheus-stack-prometheus-node-exporter",
+      "For OOMKill: increase memory limit in helm values and apply",
+      "For RBAC: verify ClusterRoleBinding for kube-state-metrics service account"
+    ],
+    "escalation": "Loss of kube-state-metrics or node-exporter causes alert blindness for cluster health. Escalate if pods cannot restart after 2 attempts."
+  }
+]

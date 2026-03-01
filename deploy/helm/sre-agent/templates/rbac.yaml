@@ -1,0 +1,50 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "sre-agent.name" . }}
+  labels:
+    {{- include "sre-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - events
+      - nodes
+      - namespaces
+      - services
+      - endpoints
+      - resourcequotas
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: [get, list, watch]
+  - apiGroups: [kubevirt.io]
+    resources:
+      - virtualmachineinstances
+      - virtualmachines
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources:
+      - nodes
+      - pods
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "sre-agent.name" . }}
+  labels:
+    {{- include "sre-agent.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "sre-agent.name" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sre-agent.name" . }}
+    namespace: {{ .Release.Namespace }}

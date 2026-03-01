@@ -1,0 +1,272 @@
+[
+  {
+    "id": "RB-K8S-001",
+    "title": "etcd High Latency / etcd Cluster Unhealthy",
+    "tags": ["etcd", "kubernetes", "control-plane", "latency"],
+    "symptoms": [
+      "Alert: etcdHighCommitDurations or etcdHighFsyncDurations",
+      "kubectl commands slow or timing out (>5s for simple operations)",
+      "API server logs show 'etcdserver: request timed out'",
+      "Alert: etcdInsufficientMembers or etcdNoLeader"
+    ],
+    "causes": [
+      "Disk I/O latency on etcd nodes (etcd is very disk-sensitive)",
+      "etcd leader election loop (unstable network between control plane nodes)",
+      "etcd DB size too large (>2GB triggers performance warnings)",
+      "Insufficient memory causing etcd compaction lag",
+      "Clock drift between control plane nodes"
+    ],
+    "investigation": [
+      "kubectl -n kube-system get pods -l component=etcd",
+      "kubectl -n kube-system logs etcd-<node> --tail=100",
+      "# On control plane node (SSH): etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key endpoint health",
+      "# Check etcd DB size: etcdctl ... endpoint status --write-out=table",
+      "# Check disk: iostat -x 1 10 | grep -E 'sda|nvme'",
+      "# Check clock: chronyc tracking"
+    ],
+    "remediation": [
+      "For disk I/O: move etcd data to faster disk (NVMe), use dedicated disk not shared with OS",
+      "For large DB: compact and defrag: etcdctl compact <rev> && etcdctl defrag",
+      "For clock drift: fix NTP on control plane nodes, restart chronyd",
+      "For network partition: check physical network between control plane nodes",
+      "For memory: ensure etcd nodes have >8GB RAM, set --quota-backend-bytes=8589934592",
+      "For leader election storm: identify the problematic node, drain and restart it"
+    ],
+    "escalation": "etcd quorum loss makes the entire Kubernetes cluster read-only. This is a P1 cluster outage. Escalate immediately with control plane access."
+  },
+  {
+    "id": "RB-K8S-002",
+    "title": "Kubernetes API Server Overloaded / Slow",
+    "tags": ["kubernetes", "api-server", "control-plane", "performance"],
+    "symptoms": [
+      "kubectl commands taking >10 seconds",
+      "Alert: KubeAPIErrorBudgetBurn or KubeAPILatencyHigh",
+      "Services failing to get updates from API server (watch errors)",
+      "Operators and controllers stuck or falling behind"
+    ],
+    "causes": [
+      "High number of LIST/WATCH requests overwhelming API server",
+      "etcd slow (see RB-K8S-001)",
+      "API server pod resource-limited (OOMKill or CPU throttle)",
+      "Thundering herd after cluster-wide pod restart",
+      "Many operators doing unfiltered LIST operations"
+    ],
+    "investigation": [
+      "kubectl -n kube-system get pods -l component=kube-apiserver",
+      "kubectl -n kube-system logs kube-apiserver-<node> --tail=100 | grep -i 'slow\\|timeout\\|error'",
+      "kubectl top pods -n kube-system",
+      "# API server metrics: curl https://localhost:6443/metrics | grep apiserver_request_duration",
+      "kubectl get --raw /metrics | grep apiserver_current_inflight_requests"
+    ],
+    "remediation": [
+      "Restart API server (non-destructive on multi-control-plane): kubectl -n kube-system delete pod kube-apiserver-<node>",
+      "Increase API server --max-requests-inflight and --max-mutating-requests-inflight",
+      "Identify noisy clients: grep API server logs for high-frequency requestors",
+      "Rate-limit specific operators by adding resource quotas or flow control (APF)",
+      "If etcd is the bottleneck: address etcd issues (see RB-K8S-001)"
+    ],
+    "escalation": "API server degradation impacts all Kubernetes operations. Escalate if kubectl commands take >30s or fail consistently."
+  },
+  {
+    "id": "RB-K8S-003",
+    "title": "Node NotReady / Kubelet Failure",
+    "tags": ["kubernetes", "node", "kubelet", "notready"],
+    "symptoms": [
+      "kubectl get nodes shows node in NotReady state",
+      "Alert: KubeNodeNotReady firing",
+      "Pods on that node in Unknown state",
+      "New pods not scheduled to the node"
+    ],
+    "causes": [
+      "Kubelet crashed or hung (disk full, OOMKill, bug)",
+      "Node lost network connectivity to API server",
+      "Container runtime (containerd) crashed",
+      "Node overloaded (CPU/memory pressure)",
+      "Disk pressure (PID pressure or inotify limit)"
+    ],
+    "investigation": [
+      "kubectl describe node <node-name>",
+      "kubectl get events --field-selector involvedObject.name=<node> --sort-by='.lastTimestamp'",
+      "# SSH to node:",
+      "# systemctl status kubelet",
+      "# journalctl -u kubelet --since '10 minutes ago'",
+      "# systemctl status containerd",
+      "# df -h  # check disk usage",
+      "# free -m  # check memory"
+    ],
+    "remediation": [
+      "Restart kubelet: SSH to node, 'systemctl restart kubelet'",
+      "Restart containerd: SSH to node, 'systemctl restart containerd'",
+      "If disk full: clean up /var/log, old container images: 'crictl rmi --prune'",
+      "If OOMKill: check memory-intensive pods, add limits, or add more RAM",
+      "If node unresponsive: reboot the node (coordinated with draining first if possible)",
+      "Drain node before reboot: kubectl drain <node> --ignore-daemonsets --delete-emptydir-data"
+    ],
+    "escalation": "Multiple nodes NotReady simultaneously is a cluster-wide outage. Physical access may be required for unresponsive nodes."
+  },
+  {
+    "id": "RB-K8S-004",
+    "title": "Kubernetes Certificate Expiry / TLS Errors",
+    "tags": ["kubernetes", "tls", "certificate", "expiry"],
+    "symptoms": [
+      "kubectl commands fail with 'certificate has expired or is not yet valid'",
+      "Alert: KubernetesApiServerCertificateExpiresInLessThan14Days",
+      "Nodes go NotReady due to kubelet cert expiry",
+      "API server logs show TLS handshake errors"
+    ],
+    "causes": [
+      "Cluster certificates expired (kubeadm default: 1 year)",
+      "Auto-rotation disabled or failed",
+      "System time skew causing cert validity issues",
+      "Manual cert rotation done incorrectly"
+    ],
+    "investigation": [
+      "# Check cert expiry (on control plane node SSH):",
+      "kubeadm certs check-expiration",
+      "# Or directly:",
+      "openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -dates",
+      "# Check kubelet client cert:",
+      "openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -dates"
+    ],
+    "remediation": [
+      "Rotate all kubeadm certs: SSH to control plane, 'kubeadm certs renew all'",
+      "Restart control plane pods after renewal: they must reload certs",
+      "On Flatcar: kubeadm runs in container — exec into the kubeadm container or host",
+      "Update kubeconfig after renewal: 'cp /etc/kubernetes/admin.conf ~/.kube/config'",
+      "For kubelet cert rotation: ensure --rotate-certificates=true in kubelet config",
+      "Enable auto-renewal via CronJob or kubeadm upgrade (upgrades also renew certs)"
+    ],
+    "escalation": "Cert expiry causes full cluster authentication failure. Emergency P1 requiring immediate control plane access."
+  },
+  {
+    "id": "RB-K8S-005",
+    "title": "Pod OOMKilled / Memory Limit Exceeded",
+    "tags": ["kubernetes", "oom", "memory", "pod", "limit"],
+    "symptoms": [
+      "Pod in CrashLoopBackOff with 'OOMKilled' in Last State Reason",
+      "kubectl describe pod shows: 'Last State: Terminated Reason: OOMKilled'",
+      "Alert: KubePodOOMKilled",
+      "Application restarts frequently without other error"
+    ],
+    "causes": [
+      "Memory limit set too low for the workload",
+      "Memory leak in the application",
+      "Spike in traffic causing temporary memory surge",
+      "JVM/Go runtime not respecting cgroup memory limits"
+    ],
+    "investigation": [
+      "kubectl describe pod <name> -n <namespace>  # check Limits and Last State",
+      "kubectl top pod <name> -n <namespace>",
+      "kubectl logs <name> -n <namespace> --previous",
+      "kubectl get events -n <namespace> | grep OOM"
+    ],
+    "remediation": [
+      "Increase memory limit: kubectl -n <ns> edit deployment <name>, set resources.limits.memory",
+      "For JVM: add -XX:MaxRAMPercentage=75 JVM flag, set JAVA_TOOL_OPTIONS",
+      "For Go: set GOMEMLIMIT env var to 90% of limit",
+      "If memory leak: investigate heap dumps, update application version",
+      "Set HorizontalPodAutoscaler to scale before OOM: add memory target"
+    ],
+    "escalation": "Persistent OOMKill without limit increase causes service degradation. Escalate to application team for memory optimization."
+  },
+  {
+    "id": "RB-K8S-006",
+    "title": "Flatcar Container Linux Node Update / Reboot Loop",
+    "tags": ["flatcar", "node", "update", "reboot", "container-linux-update"],
+    "symptoms": [
+      "Node rebooting unexpectedly during working hours",
+      "Multiple nodes rebooting simultaneously causing disruption",
+      "Pods evicted and not rescheduled properly",
+      "kubelet showing 'node has rebooted' in logs"
+    ],
+    "causes": [
+      "Container Linux Update Engine (locksmith) triggering automatic reboot after OS update",
+      "All nodes in same reboot window (no max-reboot-count configured)",
+      "Manual OS update applied without draining first",
+      "Failed OS update leaving node in inconsistent state"
+    ],
+    "investigation": [
+      "# SSH to node:",
+      "# systemctl status update-engine",
+      "# systemctl status locksmithd",
+      "# update_engine_client -status",
+      "kubectl get nodes -o wide  # check KERNEL-VERSION for differences",
+      "kubectl get events -A | grep -i 'reboot\\|update' | tail -20"
+    ],
+    "remediation": [
+      "Pause locksmith to prevent more reboots: SSH to node, 'systemctl stop locksmithd'",
+      "Set max simultaneous reboots: configure locksmith with --max-count=1",
+      "Use pod disruption budgets to protect workloads during reboots",
+      "Manual drain before reboot: kubectl drain <node> --ignore-daemonsets --delete-emptydir-data",
+      "Reboot node: kubectl cordon <node>, SSH and reboot, then kubectl uncordon <node>",
+      "For stuck update: SSH to node, 'update_engine_client -update' or 'systemctl restart update-engine'"
+    ],
+    "escalation": "Uncoordinated node reboots can cause widespread pod disruption. Coordinate maintenance windows for OS updates on production clusters."
+  },
+  {
+    "id": "RB-K8S-007",
+    "title": "PersistentVolumeClaim Stuck in Pending",
+    "tags": ["kubernetes", "pvc", "storage", "pending", "provisioning"],
+    "symptoms": [
+      "kubectl get pvc shows PVC in Pending state",
+      "Pod stuck in ContainerCreating waiting for volume",
+      "kubectl describe pvc shows 'waiting for a volume to be created'",
+      "No matching PersistentVolume available"
+    ],
+    "causes": [
+      "StorageClass not found or misspelled",
+      "Storage provisioner (Rook-Ceph CSI) not running",
+      "Insufficient storage in Ceph pool (see RB-CEPH-004)",
+      "StorageClass is WaitForFirstConsumer but no pod scheduled yet",
+      "ResourceQuota limiting PVC creation"
+    ],
+    "investigation": [
+      "kubectl describe pvc <name> -n <namespace>",
+      "kubectl get storageclass",
+      "kubectl get events -n <namespace> | grep <pvc-name>",
+      "kubectl -n rook-ceph get pods -l app=csi-rbdplugin-provisioner",
+      "kubectl -n rook-ceph logs deploy/csi-rbdplugin-provisioner -c csi-provisioner --tail=100"
+    ],
+    "remediation": [
+      "Verify StorageClass name in PVC spec matches exactly (case-sensitive)",
+      "Check default StorageClass: kubectl get sc | grep default",
+      "If provisioner not running: fix Rook-Ceph CSI (see RB-CEPH-005)",
+      "If ResourceQuota: kubectl describe resourcequota -n <namespace>",
+      "For WaitForFirstConsumer: create the Pod — PVC will provision when pod is scheduled"
+    ],
+    "escalation": "PVC stuck in Pending blocks pod startup. If storage provisioner cannot be fixed, escalate to storage team."
+  },
+  {
+    "id": "RB-K8S-008",
+    "title": "DNS Resolution Failures Inside Cluster / CoreDNS Issues",
+    "tags": ["kubernetes", "coredns", "dns", "networking"],
+    "symptoms": [
+      "Pods cannot resolve service names (e.g., 'could not resolve host: my-svc.default.svc.cluster.local')",
+      "Alert: CoreDNSDown or KubeDNSDown",
+      "kubectl exec into pod shows nslookup failing",
+      "Intermittent DNS failures under load"
+    ],
+    "causes": [
+      "CoreDNS pods not running",
+      "CoreDNS Corefile misconfiguration",
+      "ndots setting too high causing slow DNS (trying multiple search domains)",
+      "CoreDNS memory limit too low under high query load",
+      "Upstream DNS (/etc/resolv.conf on nodes) unreachable"
+    ],
+    "investigation": [
+      "kubectl -n kube-system get pods -l k8s-app=kube-dns",
+      "kubectl -n kube-system logs -l k8s-app=kube-dns --tail=100",
+      "kubectl -n kube-system describe cm coredns",
+      "kubectl -n kube-system top pods -l k8s-app=kube-dns",
+      "# Test from a pod: kubectl run dnstest --image=busybox --rm -it -- nslookup kubernetes"
+    ],
+    "remediation": [
+      "Restart CoreDNS: kubectl -n kube-system rollout restart deploy/coredns",
+      "Scale up CoreDNS for load: kubectl -n kube-system scale deploy/coredns --replicas=3",
+      "Increase memory: kubectl -n kube-system edit deploy/coredns, set resources.limits.memory",
+      "Fix upstream DNS: check /etc/resolv.conf on nodes via SSH",
+      "Enable CoreDNS caching: add 'cache 300' to Corefile forward block"
+    ],
+    "escalation": "DNS failure breaks service discovery cluster-wide. If CoreDNS cannot be restored, pods cannot find any services. P1 incident."
+  }
+]

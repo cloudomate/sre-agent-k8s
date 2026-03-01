@@ -1,0 +1,12 @@
+apiVersion: v2
+name: sre-agent
+description: LLM-powered automated SRE incident investigation agent for HCI platforms
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - sre
+  - ai
+  - kubernetes
+  - incident-response
+  - llm

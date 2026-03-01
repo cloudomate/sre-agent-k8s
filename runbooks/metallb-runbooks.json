@@ -1,0 +1,101 @@
+[
+  {
+    "id": "RB-MLB-001",
+    "title": "MetalLB LoadBalancer Service Stuck in Pending / No External IP Assigned",
+    "tags": ["metallb", "loadbalancer", "ip", "service"],
+    "symptoms": [
+      "kubectl get svc shows EXTERNAL-IP as <pending> indefinitely",
+      "Alert: MetalLBNoBGPSession or MetalLBConfigNotLoaded",
+      "Services of type LoadBalancer never receive an external IP",
+      "metallb-speaker pod logs show 'no available IPs'"
+    ],
+    "causes": [
+      "IPAddressPool exhausted — all IPs in pool already assigned",
+      "L2Advertisement or BGPAdvertisement not matching the service namespace/selector",
+      "metallb-speaker pods not running on all nodes",
+      "IPAddressPool not created or has wrong CIDR",
+      "Service has loadBalancerClass mismatch"
+    ],
+    "investigation": [
+      "kubectl get svc -A | grep LoadBalancer",
+      "kubectl -n metallb-system get ipaddresspool -o yaml",
+      "kubectl -n metallb-system get l2advertisement -o yaml",
+      "kubectl -n metallb-system get pods",
+      "kubectl -n metallb-system logs -l component=speaker --tail=100",
+      "kubectl -n metallb-system logs -l component=controller --tail=100",
+      "kubectl get events -n metallb-system --sort-by='.lastTimestamp'"
+    ],
+    "remediation": [
+      "Check pool capacity: compare assigned IPs vs pool range",
+      "Expand IPAddressPool: edit the pool CR to add more IP ranges",
+      "If L2Advertisement missing selector, add namespace selector to match new services",
+      "Restart speaker daemonset: kubectl -n metallb-system rollout restart ds/speaker",
+      "Restart controller: kubectl -n metallb-system rollout restart deploy/controller",
+      "Verify ARP/NDP: on router/switch confirm MAC entries for pool IPs are present"
+    ],
+    "escalation": "Pool exhaustion requires network team coordination to expand the IP range 10.0.0.200-10.0.0.250.",
+    "references": ["https://metallb.universe.tf/troubleshooting/"]
+  },
+  {
+    "id": "RB-MLB-002",
+    "title": "MetalLB Speaker Pod CrashLoopBackOff",
+    "tags": ["metallb", "speaker", "crash", "daemonset"],
+    "symptoms": [
+      "kubectl -n metallb-system get pods shows speaker pods in CrashLoopBackOff",
+      "Existing LoadBalancer services losing external connectivity",
+      "ARP responses for VIPs stop working",
+      "Alert: MetalLBSpeakerDown"
+    ],
+    "causes": [
+      "Invalid MetalLB configuration (malformed IPAddressPool or Advertisement CRs)",
+      "Permissions issue — speaker cannot bind to raw network sockets",
+      "Node kernel missing ARP/NDP support (rare on Flatcar)",
+      "Speaker ConfigMap corruption"
+    ],
+    "investigation": [
+      "kubectl -n metallb-system describe ds/speaker",
+      "kubectl -n metallb-system logs <speaker-pod> --previous",
+      "kubectl -n metallb-system get events --sort-by='.lastTimestamp'",
+      "kubectl -n metallb-system get ipaddresspool,l2advertisement,bgpadvertisement -o yaml",
+      "kubectl -n metallb-system get configmap -o yaml"
+    ],
+    "remediation": [
+      "Fix any malformed CRs: kubectl -n metallb-system edit ipaddresspool <name>",
+      "If config invalid: kubectl -n metallb-system delete ipaddresspool <bad> and recreate",
+      "Check SecurityContext: speaker needs NET_RAW capability — verify PSP/PSA allows it",
+      "Recreate speaker pods: kubectl -n metallb-system rollout restart ds/speaker",
+      "Verify connectivity restored: arping <vip> from an external host"
+    ],
+    "escalation": "If all speaker pods are down, all LoadBalancer VIPs go dark. This is P1 for external service access."
+  },
+  {
+    "id": "RB-MLB-003",
+    "title": "MetalLB IP Address Conflict with Existing Network",
+    "tags": ["metallb", "ip", "conflict", "network", "arp"],
+    "symptoms": [
+      "External IP assigned but service unreachable from outside",
+      "ARP conflicts in switch logs",
+      "Another host on the network has the same IP",
+      "Intermittent connectivity to LoadBalancer services"
+    ],
+    "causes": [
+      "IPAddressPool CIDR overlaps with DHCP range or static assignments",
+      "Another MetalLB or keepalived instance claiming same IPs",
+      "Physical host or VM using an IP in the MetalLB pool range"
+    ],
+    "investigation": [
+      "kubectl -n metallb-system get ipaddresspool -o yaml  # verify range",
+      "# From external host: arp -n | grep <vip>",
+      "# Check DHCP server exclusions include MetalLB range 10.0.0.200-10.0.0.250",
+      "# Ping sweep: nmap -sP 10.0.0.200-250 from external host",
+      "kubectl -n metallb-system logs -l component=speaker | grep 'conflict\\|duplicate'"
+    ],
+    "remediation": [
+      "Identify the conflicting host and remove/reassign its IP",
+      "Update IPAddressPool to avoid conflicting range: kubectl -n metallb-system edit ipaddresspool",
+      "Coordinate with network team to reserve MetalLB pool in DHCP exclusions",
+      "Use gratuitous ARP to reclaim IPs: MetalLB will re-announce on speaker restart"
+    ],
+    "escalation": "IP conflicts require network team intervention to resolve at the DHCP/switch level."
+  }
+]

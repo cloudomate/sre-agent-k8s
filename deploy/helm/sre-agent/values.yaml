@@ -1,0 +1,131 @@
+# SRE Agent Helm values
+# Override any of these in a values override file or with --set flags.
+
+# ── SRE Agent image ───────────────────────────────────────────────────────────
+image:
+  repository: cr.imys.in/hci/sre-agent
+  tag: latest
+  pullPolicy: Always
+
+# ── LLM configuration (any OpenAI-compatible endpoint) ───────────────────────
+llm:
+  # Endpoint — set to your LLM server URL
+  # llamacpp in-cluster: http://llamacpp.sre-agent.svc.cluster.local:11434/v1
+  # OpenAI:              https://api.openai.com/v1
+  baseUrl: "http://llamacpp.{{ .Release.Namespace }}.svc.cluster.local:11434/v1"
+  model: "qwen3.gguf"
+  embedModel: "nomic-embed-text"
+  timeout: 300
+  maxSteps: 12
+  # API key — override via --set llm.apiKey=sk-... or a separate secret
+  apiKey: "llamacpp"
+
+# ── Kubernetes ────────────────────────────────────────────────────────────────
+kubernetes:
+  inCluster: true
+  namespace: "default"     # namespace to investigate (not the deploy namespace)
+
+# ── Metrics & monitoring ──────────────────────────────────────────────────────
+prometheus:
+  url: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+
+alertmanager:
+  url: "http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093"
+
+# ── Log backend ───────────────────────────────────────────────────────────────
+log:
+  backend: "kubernetes"    # kubernetes | loki | journald | file
+  lokiUrl: ""
+  maxLines: 200
+
+# ── Event watcher ─────────────────────────────────────────────────────────────
+watchEvents:
+  enabled: true
+  cooldownSeconds: 900
+
+# ── Reporting ─────────────────────────────────────────────────────────────────
+report:
+  channels: "stdout,file"  # comma-separated: stdout file slack webhook email sms whatsapp
+  dir: "/app/reports"
+  runbookDir: "/app/runbooks"
+
+# Slack
+slack:
+  webhookUrl: ""
+
+# Generic webhook
+webhook:
+  reportUrl: ""
+
+# Email (SMTP)
+smtp:
+  host: ""
+  port: 587
+  tls: true
+  user: ""
+  password: ""
+  from: "sre-agent@example.com"
+  to: ""
+
+# Twilio (SMS / WhatsApp)
+twilio:
+  accountSid: ""
+  authToken: ""
+  from: ""
+  smsTo: ""
+  whatsappTo: ""
+
+# ── SRE Agent resources ───────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+# ── Reports PVC ───────────────────────────────────────────────────────────────
+persistence:
+  size: "1Gi"
+  storageClass: ""   # "" = cluster default
+
+# ── Services ──────────────────────────────────────────────────────────────────
+service:
+  port: 8080
+  # Expose via LoadBalancer (e.g. MetalLB) in addition to ClusterIP
+  loadBalancer:
+    enabled: true
+    port: 80
+
+# ── Ingress (optional) ────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: "nginx"
+  host: "sre-agent.example.com"
+  tls:
+    enabled: false
+    secretName: "sre-agent-tls"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logLevel: "INFO"
+
+# ── llamacpp — in-cluster LLM server (optional) ───────────────────────────────
+llamacpp:
+  enabled: true
+  image:
+    repository: cr.imys.in/hci/llama-qwen3-4b
+    tag: latest
+    pullPolicy: Always
+  ctxSize: 16384
+  parallel: 2
+  port: 11434
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "4Gi"
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+  persistence:
+    size: "15Gi"
+    storageClass: ""   # "" = cluster default

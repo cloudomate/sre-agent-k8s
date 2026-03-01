@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+
+  # ──────────────────────────────────────────────────────────
+  # llama.cpp server — model baked into the image
+  # Build: docker build -f images/llama-qwen3.Dockerfile -t llama-qwen3 .
+  # ──────────────────────────────────────────────────────────
+  llamacpp:
+    image: cr.imys.in/hci/llama-qwen3-4b:latest
+    container_name: sre-llamacpp
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    command:
+      - "--model"
+      - "/models/qwen3.gguf"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "11434"
+      - "--ctx-size"
+      - "16384"
+      - "--n-predict"
+      - "-1"
+      - "--embedding"
+      - "--parallel"
+      - "2"
+      - "--log-disable"
+    mem_limit: 8g
+    cpus: "4"
+
+  # ──────────────────────────────────────────────────────────
+  # SRE Agent API
+  # ──────────────────────────────────────────────────────────
+  sre-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sre-agent
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - LLM_BASE_URL=http://llamacpp:11434/v1
+      - K8S_IN_CLUSTER=false
+      - KUBECONFIG=/kube/config
+    volumes:
+      - ${KUBECONFIG:-~/.kube/config}:/kube/config:ro
+      - ./reports:/app/reports
+      - ./runbooks:/app/runbooks
+    depends_on:
+      - llamacpp
+    mem_limit: 512m

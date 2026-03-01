@@ -1,0 +1,21 @@
+[
+  {
+    "id": "RB-100",
+    "title": "My HCI Service - API Timeout",
+    "tags": ["timeout", "api", "hci", "latency", "gateway"],
+    "summary": "HCI API service is timing out. Usually caused by database overload or network partition.",
+    "steps": [
+      "Check API pod logs for timeout error messages",
+      "Verify database connectivity from the pod",
+      "Check active database connections and query latency",
+      "Look for recent spikes in API request rate",
+      "Review if a deployment happened in the last 30 minutes"
+    ],
+    "causes": [
+      "Database query slow due to missing index",
+      "Connection pool exhausted",
+      "Network latency spike between app and DB",
+      "Memory pressure causing GC pauses"
+    ]
+  }
+]

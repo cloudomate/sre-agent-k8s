@@ -1,0 +1,29 @@
+# Optional Ingress — use if your cluster has an ingress controller (nginx, traefik, etc.)
+# If you're using the LoadBalancer service in service.yaml, this is not required.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sre-agent
+  namespace: sre-agent
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Uncomment for TLS via cert-manager:
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: sre-agent.example.com   # replace with your actual hostname
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sre-agent
+                port:
+                  number: 8080
+  # Uncomment for TLS:
+  # tls:
+  #   - hosts:
+  #       - sre-agent.example.com
+  #     secretName: sre-agent-tls

@@ -1,0 +1,53 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-agent
+rules:
+  # Core resources: pods, logs, events, nodes, namespaces, services, quotas
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - events
+      - nodes
+      - namespaces
+      - services
+      - endpoints
+      - resourcequotas
+    verbs: ["get", "list", "watch"]
+
+  # Apps: deployments, replicasets, statefulsets
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+
+  # KubeVirt / Harvester VMs (HCI-specific)
+  - apiGroups: ["kubevirt.io"]
+    resources:
+      - virtualmachineinstances
+      - virtualmachines
+    verbs: ["get", "list", "watch"]
+
+  # Metrics server (for node/pod resource usage)
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - nodes
+      - pods
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sre-agent
+subjects:
+  - kind: ServiceAccount
+    name: sre-agent
+    namespace: sre-agent

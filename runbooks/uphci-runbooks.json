@@ -1,0 +1,225 @@
+[
+  {
+    "id": "RB-UPHCI-001",
+    "title": "uphci Bootstrap Stuck or Stalled",
+    "tags": ["uphci", "bootstrap", "stuck", "stalled", "init", "timeout", "status", "phase"],
+    "summary": "The uphci bootstrap container (uphci init) is stuck in a phase (Generating, Serving, Waiting, or installing add-ons) and not progressing. Check /output/status.json for current phase and last message.",
+    "steps": [
+      "Check current bootstrap phase: cat /output/status.json (or docker exec <container> cat /output/status.json)",
+      "Check bootstrap container logs: docker logs <uphci-container> --tail=100",
+      "If phase=Generating: check cluster.yaml is valid — run 'uphci validate' first",
+      "If phase=Serving: check Matchbox is reachable: curl http://<bootstrap-ip>:8080/ipxe?mac=<node-mac>",
+      "If phase=Serving: check dnsmasq is running: docker exec <container> ps aux | grep dnsmasq",
+      "If phase=Waiting: check if nodes are PXE booting — look for DHCP leases in dnsmasq log",
+      "If phase=Waiting: check Kubernetes API reachability: curl -k https://<control-plane-vip>:6443/healthz",
+      "If stuck on add-ons: check which add-on is failing from logs (Kube-OVN, MetalLB, Rook-Ceph, Nebraska)",
+      "Check if bootstrap process exited: docker inspect <container> | grep Status",
+      "To restart only the stuck phase: run 'uphci serve' (if configs already generated) or full 'uphci init' for fresh start"
+    ],
+    "causes": [
+      "cluster.yaml has invalid configuration (wrong MACs, IPs, or k8s_version format)",
+      "Nodes not PXE booting — network L2 isolation issue, DHCP conflict, or BMC not configured",
+      "Kubernetes API not coming up — kubeadm init failed on first control-plane node",
+      "Add-on installation failed (most commonly Rook-Ceph timing out before HEALTH_OK)",
+      "SSH key not accepted by node — kubeconfig fetch via SSH fails",
+      "Bootstrap container killed mid-run (OOM or manual stop)",
+      "Port 8080 or 67/UDP already in use on bootstrap host"
+    ]
+  },
+  {
+    "id": "RB-UPHCI-002",
+    "title": "uphci PXE Boot Failure — Nodes Not Booting",
+    "tags": ["uphci", "pxe", "boot", "matchbox", "dnsmasq", "dhcp", "tftp", "ipxe", "flatcar", "network"],
+    "summary": "One or more nodes are not PXE booting into Flatcar Container Linux during uphci bootstrap. The node stays at BIOS/UEFI screen or boots from local disk.",
+    "steps": [
+      "Verify Matchbox is serving configs: curl http://<bootstrap-ip>:8080/ipxe?mac=<node-mac>",
+      "Check if Matchbox has the correct profile for the node MAC: curl http://<bootstrap-ip>:8080/metadata?mac=<node-mac>",
+      "Verify DHCP is working: check dnsmasq logs in bootstrap container for 'DHCPDISCOVER' and 'DHCPOFFER' from node MAC",
+      "If no DHCPDISCOVER seen: node is not reaching bootstrap host — check L2 connectivity and VLAN config",
+      "Check if bootstrap host has NET_ADMIN capability: docker inspect <container> | grep Privileged",
+      "Verify DHCP mode: if another DHCP server exists on the network, must use proxy mode (no dhcp_range in config)",
+      "Check if TFTP is reachable: tftp <bootstrap-ip> (try 'get ipxe/undionly.kpxe')",
+      "Check if Flatcar PXE assets are bundled: docker exec <container> ls /assets/flatcar/<version>/",
+      "Verify node is set to PXE boot first in BIOS/UEFI boot order, or check BMC power-on-with-PXE was triggered",
+      "For BMC-managed nodes: check BMC logs for PXE boot set operation",
+      "Check if node MAC is correctly configured in cluster.yaml (case-insensitive, colon-separated)"
+    ],
+    "causes": [
+      "L2 network segment between bootstrap host and nodes is wrong — nodes must be on same broadcast domain",
+      "Another DHCP server on network conflicting (use proxy mode — remove dhcp_range from config)",
+      "Bootstrap container missing NET_ADMIN / not run with --privileged (dnsmasq cannot bind UDP 67)",
+      "Node MAC address misconfigured in cluster.yaml — profile not found by Matchbox",
+      "Flatcar PXE assets missing from container image (wrong version specified)",
+      "BMC did not successfully set one-time PXE boot — node boots from disk",
+      "UEFI SecureBoot blocking unsigned iPXE bootloader",
+      "Firewall blocking UDP 67 (DHCP) or UDP 69 (TFTP) between node and bootstrap host"
+    ]
+  },
+  {
+    "id": "RB-UPHCI-003",
+    "title": "uphci kubeadm Join Failure — Workers Not Joining",
+    "tags": ["uphci", "kubeadm", "join", "worker", "controller", "token", "certificate", "flatcar"],
+    "summary": "Worker or additional control-plane nodes are failing to join the Kubernetes cluster during uphci init. kubeadm join exits with an error on the node.",
+    "steps": [
+      "Check node systemd journal on the failing node: journalctl -u kubeadm --since '1h ago' (requires SSH access)",
+      "SSH into the node from bootstrap: ssh -i <key> core@<node-ip> journalctl -u kubeadm | tail -50",
+      "Check if kubeadm token is still valid (expires after 24h by default): docker exec <container> kubectl --kubeconfig /output/kubeconfig token list",
+      "Check if API server is reachable from the node: from node, curl -k https://<control-plane-vip>:6443/healthz",
+      "Check if kube-ovn CNI installed before join: kubectl get pods -n kube-system | grep kube-ovn (should be Running)",
+      "Verify kubeadm binary path on Flatcar: must use /opt/bin/kubeadm (not /usr/local/bin/kubeadm)",
+      "Check kubelet service on node: journalctl -u kubelet --since '30m ago'",
+      "Check if /var has enough space on node (Flatcar PXE: /var on tmpfs): df -h /var",
+      "Verify containerd config path: on Flatcar, config is at /usr/share/containerd/config.toml",
+      "Check bootstrap status for node-specific phase: cat /output/status.json | jq .nodes",
+      "If token expired: run 'uphci init' fresh — token is auto-regenerated"
+    ],
+    "causes": [
+      "kubeadm bootstrap token expired (24h TTL) — occurs if bootstrap took too long",
+      "Kube-OVN CNI not yet installed — nodes cannot become Ready without CNI",
+      "Flatcar read-only /usr — kubeadm or CNI binaries cannot be placed in /usr/local/bin",
+      "kubeadm using wrong binary path on Flatcar (must be /opt/bin/kubeadm)",
+      "Control plane VIP not reachable from worker — kube-vip not running on first controller",
+      "Disk full on /var (tmpfs for PXE nodes) — container images fill ephemeral storage",
+      "Certificate key mismatch between controllers — HA join requires cert key from init",
+      "containerd not finding config at expected path (/usr/share/containerd/config.toml on Flatcar)"
+    ]
+  },
+  {
+    "id": "RB-UPHCI-004",
+    "title": "uphci Rook-Ceph HEALTH_OK Timeout",
+    "tags": ["uphci", "rook", "ceph", "cephcluster", "osd", "mon", "health", "timeout", "storage", "addons"],
+    "summary": "uphci addons phase is stuck waiting for Rook-Ceph to reach HEALTH_OK. The 15-minute timeout will trigger and bootstrap will fail unless resolved.",
+    "steps": [
+      "Check Ceph status: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status",
+      "Check OSD status: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph osd status",
+      "List all Rook-Ceph pods: kubectl get pods -n rook-ceph",
+      "Check if rook-ceph-operator is running: kubectl logs -n rook-ceph deploy/rook-ceph-operator --tail=100",
+      "Check if OSD pods started: kubectl get pods -n rook-ceph | grep osd",
+      "Read OSD prepare job logs: kubectl logs -n rook-ceph -l app=rook-ceph-osd-prepare --tail=100",
+      "Verify osd_device_filter matches actual block devices on nodes: kubectl exec -n rook-ceph deploy/rook-ceph-tools -- lsblk (from a worker node perspective)",
+      "Check if ceph_mon: true nodes (3+) are all Ready: kubectl get nodes",
+      "Check if storage_ip is configured and the storage network is reachable between Ceph nodes",
+      "Check CephCluster CRD: kubectl get cephcluster -n rook-ceph -o yaml | grep -A20 status",
+      "Check if raw block devices are unformatted: devices with existing partitions are skipped by Rook"
+    ],
+    "causes": [
+      "osd_device_filter regex does not match any block device on worker nodes",
+      "Block devices already have a filesystem or partition table — Rook skips formatted disks",
+      "Fewer than 3 nodes have ceph_mon: true — cannot achieve MON quorum",
+      "Storage network (bond1 / storage_ip) not reachable between nodes — OSD replication fails",
+      "Worker nodes not Ready when Rook-Ceph tries to place OSDs",
+      "Rook-Ceph OSD prepare job crashing due to missing kernel modules on Flatcar",
+      "Resource limits too low for OSD pods on nodes — OOMKilled during initialization",
+      "Ceph MON pods all scheduled on same node — node failure breaks quorum"
+    ]
+  },
+  {
+    "id": "RB-UPHCI-005",
+    "title": "uphci Kube-OVN Installation Failure on Flatcar",
+    "tags": ["uphci", "kube-ovn", "cni", "flatcar", "network", "overlay", "ovn", "usr-readonly", "opt-bin"],
+    "summary": "Kube-OVN installation fails during uphci cluster bootstrapping on Flatcar Container Linux. Nodes cannot become Ready without a working CNI plugin. This is the most Flatcar-specific failure mode.",
+    "steps": [
+      "Check Kube-OVN pods: kubectl get pods -n kube-system | grep kube-ovn",
+      "Read kube-ovn-cni DaemonSet logs: kubectl logs -n kube-system -l app=kube-ovn-cni --tail=100",
+      "Check if kube-ovn-cni tried to write to /usr/local/bin: look for 'permission denied' in kube-ovn-cni logs",
+      "Verify the Flatcar patch was applied: kubectl get ds -n kube-system kube-ovn-cni -o yaml | grep hostPath",
+      "The correct hostPath volume should use /opt/cni/bin (not /usr/local/bin)",
+      "If patch was not applied: re-run uphci wait command which includes patchKubeOVNForFlatcar()",
+      "Check kube-ovn-controller logs: kubectl logs -n kube-system deploy/kube-ovn-controller --tail=100",
+      "Check if OVN-related pods are running: kubectl get pods -n kube-system | grep ovn",
+      "Check node annotations for OVN subnet: kubectl get node <name> -o yaml | grep ovn",
+      "Verify /opt/cni/bin exists on Flatcar nodes and contains CNI binaries",
+      "As last resort: kubectl delete ds kube-ovn-cni -n kube-system && re-run uphci addons"
+    ],
+    "causes": [
+      "Flatcar has read-only /usr — kube-ovn-cni DaemonSet tries to copy binary to /usr/local/bin, fails silently or crashes",
+      "Flatcar patch (patchKubeOVNForFlatcar) was not applied before nodes tried to join",
+      "Wrong Kube-OVN version — some versions hardcode /usr/local/bin without hostPath option",
+      "upchi was interrupted before applying the patch during the WaitForCluster phase",
+      "Manual cluster setup without using uphci — Flatcar patch not applied"
+    ]
+  },
+  {
+    "id": "RB-UPHCI-006",
+    "title": "uphci BMC / Redfish Discovery Failure",
+    "tags": ["uphci", "bmc", "redfish", "ipmi", "idrack", "ilo", "power", "mac", "discovery", "supermicro"],
+    "summary": "uphci cannot discover node MAC addresses or power on nodes via BMC (Redfish/IPMI). Bootstrap stalls in Generating or Serving phase because node MACs are unknown or nodes do not power on.",
+    "steps": [
+      "Check BMC reachability from bootstrap host: curl -sk https://<bmc-ip>/redfish/v1/Systems",
+      "Test BMC credentials: curl -sk -u admin:password https://<bmc-ip>/redfish/v1/Systems/",
+      "Check if Redfish is supported: look for /redfish/v1/ endpoint returning valid JSON",
+      "If Redfish not supported, verify IPMI is enabled in BMC settings: ipmitool -I lanplus -H <bmc-ip> -U admin -P password chassis status",
+      "Check bmc_defaults.protocol in cluster.yaml — set to 'redfish', 'ipmi', or 'auto'",
+      "Check bmc.nic_index — for multi-NIC servers, index 0 is the first NIC, adjust if MAC discovery picks wrong NIC",
+      "Check bootstrap logs: docker logs <container> | grep -i 'bmc\\|redfish\\|ipmi\\|discover'",
+      "If MACs are known: manually specify them in cluster.yaml nodes sections to bypass discovery",
+      "Test IPMI power on: ipmitool -I lanplus -H <bmc-ip> -U admin -P password chassis bootdev pxe && ipmitool ... chassis power on",
+      "Check if BMC management network is reachable from bootstrap host (separate management VLAN?)"
+    ],
+    "causes": [
+      "BMC management network not reachable from bootstrap host (different VLAN/subnet)",
+      "Wrong BMC credentials in bmc_defaults — many BMCs lock out after 3 failed attempts",
+      "Redfish not enabled on older BMC firmware — needs IPMI fallback or firmware update",
+      "nic_index pointing to wrong NIC — MAC discovered is for management port, not PXE-capable NIC",
+      "BMC address not configured in cluster.yaml node specs — manual MAC configuration required",
+      "BMC SSL certificate error (self-signed) — uphci uses InsecureSkipVerify but some BMCs require specific cipher suites",
+      "IPMI over LAN disabled in BMC settings"
+    ]
+  },
+  {
+    "id": "RB-UPHCI-007",
+    "title": "uphci Node Not Reaching Ready State",
+    "tags": ["uphci", "node", "notready", "ready", "kubelet", "cni", "flatcar", "disk", "var", "tmpfs"],
+    "summary": "After PXE booting and joining the cluster, one or more nodes are stuck in NotReady state. The uphci wait phase polls for all nodes Ready and will timeout after 30 minutes.",
+    "steps": [
+      "Check node status: kubectl get nodes",
+      "Describe the NotReady node: kubectl describe node <name>",
+      "Look for MemoryPressure, DiskPressure, NetworkNotReady, or RuntimeNotReady conditions",
+      "Check if Kube-OVN CNI is running on the node: kubectl get pods -n kube-system -o wide | grep kube-ovn | grep <node-name>",
+      "SSH to the node: ssh core@<node-ip>",
+      "Check kubelet status on node: journalctl -u kubelet --since '30m ago'",
+      "Check disk usage — Flatcar PXE nodes have /var on tmpfs: df -h /var",
+      "If disk full: container image cache is filling /var — this is the Flatcar PXE boot limitation",
+      "Check containerd is running: systemctl status containerd",
+      "Check if CNI config exists: ls /etc/cni/net.d/",
+      "Check if kube-ovn-cni DaemonSet patch has been applied: kubectl get ds kube-ovn-cni -n kube-system -o yaml | grep /opt/cni",
+      "Check if node has enough allocatable resources: kubectl describe node <name> | grep Allocatable -A10"
+    ],
+    "causes": [
+      "Kube-OVN CNI not installed or Flatcar patch not applied — NetworkNotReady condition",
+      "/var on tmpfs exhausted by container image pulls (Flatcar PXE boot uses RAM for /var)",
+      "Kubelet version mismatch with control plane API server version",
+      "containerd failing due to wrong config path on Flatcar (/usr/share/containerd/config.toml)",
+      "Node has less than requested resources for system pods",
+      "Node FQDN resolution failing — kubelet cannot register with API server by hostname",
+      "Firewall blocking kubelet communication to control plane on port 10250"
+    ]
+  },
+  {
+    "id": "RB-UPHCI-008",
+    "title": "uphci DHCP / dnsmasq Conflict",
+    "tags": ["uphci", "dnsmasq", "dhcp", "tftp", "conflict", "proxy", "network", "udp", "67", "69"],
+    "summary": "dnsmasq fails to start or DHCP offers conflict with an existing DHCP server on the network. Nodes receive incorrect IP or no DHCP lease, and PXE boot fails.",
+    "steps": [
+      "Check if dnsmasq is running in container: docker exec <container> ps aux | grep dnsmasq",
+      "Check dnsmasq startup logs: docker logs <container> 2>&1 | grep -i 'dnsmasq\\|dhcp\\|failed\\|bind'",
+      "If dnsmasq failed to bind: check if port 67/UDP is already in use on bootstrap host: ss -ulnp | grep :67",
+      "If another DHCP server exists on the network: switch to proxy mode by removing dhcp_range from cluster.yaml bootstrap section",
+      "In proxy mode dnsmasq only serves PXE (TFTP) — it cooperates with existing DHCP server",
+      "Check if bootstrap host has UFW/iptables blocking UDP 67 or 69: iptables -L -n | grep -E '67|69'",
+      "Test TFTP from a node perspective: tftp <bootstrap-ip> (download ipxe/undionly.kpxe)",
+      "Verify bootstrap.ip in cluster.yaml matches the actual IP of the bootstrap host interface",
+      "Check network interface the bootstrap host is using — must match L2 segment of nodes",
+      "If in full DHCP mode: check dhcp_range does not conflict with static node IPs defined in cluster.yaml"
+    ],
+    "causes": [
+      "Another DHCP server on the network (corporate DHCP, router) conflicts — use proxy mode",
+      "Bootstrap host running systemd-networkd or NetworkManager with DHCP server capability",
+      "Bootstrap container missing --privileged or NET_ADMIN capability — dnsmasq cannot bind UDP 67",
+      "dhcp_range in cluster.yaml overlaps with existing DHCP pool — nodes get unexpected IPs",
+      "Firewall on bootstrap host blocks UDP 67/69",
+      "Bootstrap host has multiple network interfaces — dnsmasq binding to wrong interface",
+      "bootstrap.ip incorrect — dnsmasq binds to wrong interface address"
+    ]
+  }
+]

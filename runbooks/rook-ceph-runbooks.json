@@ -1,0 +1,209 @@
+[
+  {
+    "id": "RB-CEPH-001",
+    "title": "Ceph Cluster Health Degraded / HEALTH_WARN or HEALTH_ERR",
+    "tags": ["rook-ceph", "ceph", "storage", "health"],
+    "symptoms": [
+      "ceph status shows HEALTH_WARN or HEALTH_ERR",
+      "CephCluster CR shows Phase=Ready but Health=HEALTH_WARN",
+      "Alert: CephClusterErrorState or CephClusterWarningState firing",
+      "Persistent Volume claims stuck in Pending"
+    ],
+    "causes": [
+      "One or more OSDs down or out",
+      "MON quorum issues (lost majority of monitors)",
+      "Pool PG degraded or undersized",
+      "Slow OSD ops / high latency",
+      "Clock skew between nodes (>0.05s triggers HEALTH_WARN)"
+    ],
+    "investigation": [
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph health detail",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd tree",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd df",
+      "kubectl -n rook-ceph get pods -l app=rook-ceph-osd",
+      "kubectl -n rook-ceph get cephcluster -o yaml",
+      "kubectl -n rook-ceph logs deploy/rook-ceph-operator --tail=100"
+    ],
+    "remediation": [
+      "If OSD is down: kubectl -n rook-ceph delete pod <osd-pod> to trigger restart",
+      "If OSD is out: kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd in <id>",
+      "For clock skew: check chronyc tracking on all nodes via SSH, restart chronyd",
+      "For PG issues: kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph pg repair <pgid>",
+      "For slow ops: kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd blocked-by",
+      "If operator stuck: kubectl -n rook-ceph rollout restart deploy/rook-ceph-operator"
+    ],
+    "escalation": "If HEALTH_ERR persists >10min or data loss suspected, escalate to storage team. Do NOT delete OSDs or PGs without approval.",
+    "references": ["https://rook.io/docs/rook/latest/Troubleshooting/ceph-common-issues/"]
+  },
+  {
+    "id": "RB-CEPH-002",
+    "title": "Ceph OSD Down / OSD Not Running",
+    "tags": ["rook-ceph", "osd", "storage", "disk"],
+    "symptoms": [
+      "Alert: CephOSDDown firing",
+      "kubectl -n rook-ceph get pods shows osd pod in CrashLoopBackOff or Error",
+      "ceph osd tree shows OSD as DOWN",
+      "PVC attach failures for rook-ceph-block storage class"
+    ],
+    "causes": [
+      "Underlying disk failure or I/O error",
+      "Node the OSD runs on is unreachable",
+      "OSD crashed due to memory pressure (OOMKilled)",
+      "Incorrect disk permissions or bluestore corruption",
+      "PodAntiAffinity conflict after node rescheduling"
+    ],
+    "investigation": [
+      "kubectl -n rook-ceph get pods -l app=rook-ceph-osd -o wide",
+      "kubectl -n rook-ceph describe pod <osd-pod>",
+      "kubectl -n rook-ceph logs <osd-pod> --previous",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd tree",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd status",
+      "# On the node (via SSH): dmesg | grep -i 'I/O error\\|blk\\|nvme' | tail -50",
+      "# Check disk health: smartctl -a /dev/<disk>"
+    ],
+    "remediation": [
+      "Delete crashed OSD pod to let it restart: kubectl -n rook-ceph delete pod <osd-pod>",
+      "If OSD stays down after restart, check node disk health via SSH",
+      "For OOMKilled: increase OSD memory limit in CephCluster CR spec.storage.config",
+      "For persistent disk I/O errors: mark disk as failed, replace hardware",
+      "After disk replacement: new OSD will auto-provision via rook-ceph-operator",
+      "Monitor rebalancing: kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph -w"
+    ],
+    "escalation": "Hardware disk failure requires physical replacement. Escalate if more than 1 OSD is down simultaneously — risk of data loss if pool min_size is breached.",
+    "references": ["https://rook.io/docs/rook/latest/Troubleshooting/ceph-common-issues/#osd-pods-are-not-created-on-my-devices"]
+  },
+  {
+    "id": "RB-CEPH-003",
+    "title": "Ceph MON Quorum Lost / Monitor Not In Quorum",
+    "tags": ["rook-ceph", "monitor", "quorum", "storage"],
+    "symptoms": [
+      "Alert: CephMonQuorumAtRisk or CephMonQuorumLost",
+      "ceph status shows 'mons X,Y are out of quorum'",
+      "All Ceph operations blocked / hung",
+      "rook-ceph-tools exec hangs indefinitely"
+    ],
+    "causes": [
+      "Majority of MON pods down (need >50% for quorum)",
+      "Network partition between MON nodes",
+      "Clock skew causing election failures",
+      "MON store corruption"
+    ],
+    "investigation": [
+      "kubectl -n rook-ceph get pods -l app=rook-ceph-mon",
+      "kubectl -n rook-ceph describe pod <mon-pod>",
+      "kubectl -n rook-ceph logs <mon-pod> --tail=200",
+      "# Check if >1 mon is running. With 3 mons you need at least 2 up.",
+      "# If stuck: kubectl -n rook-ceph exec -it <working-mon-pod> -- ceph mon stat"
+    ],
+    "remediation": [
+      "Restart down MON pods: kubectl -n rook-ceph delete pod <mon-pod>",
+      "If node is down: cordon/drain is NOT needed, wait for node to recover",
+      "For clock skew: SSH to each node, run 'chronyc tracking' and fix NTP sync",
+      "For store corruption: follow Rook disaster recovery docs (requires operator intervention)",
+      "If <2 mons available: this is a cluster outage — escalate immediately"
+    ],
+    "escalation": "MON quorum loss with <2 mons running is a critical storage outage. Escalate to storage team with urgency. Do not attempt MON store surgery without expertise.",
+    "references": ["https://rook.io/docs/rook/latest/Troubleshooting/disaster-recovery/"]
+  },
+  {
+    "id": "RB-CEPH-004",
+    "title": "Ceph Storage Pool Nearly Full / OSD Near Full",
+    "tags": ["rook-ceph", "capacity", "storage", "full"],
+    "symptoms": [
+      "Alert: CephPoolNearFull or CephOSDNearFull firing",
+      "ceph df shows usage >75%",
+      "New PVC creation fails with 'no space left on device'",
+      "ceph status shows HEALTH_WARN 'X nearfull osds'"
+    ],
+    "causes": [
+      "Rapid PVC growth or large workload data increase",
+      "Replication overhead (3x for replicated pools)",
+      "Deleted data not yet freed (scrub/compaction lag)",
+      "Cluster was undersized for workload"
+    ],
+    "investigation": [
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph df detail",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd df tree",
+      "kubectl get pv --all-namespaces -o custom-columns='PVC:.spec.claimRef.name,SIZE:.spec.capacity.storage,PHASE:.status.phase'",
+      "# Identify largest PVCs and their consumers",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- rados df"
+    ],
+    "remediation": [
+      "Immediate: free space by deleting unused PVCs: kubectl delete pvc <name> -n <ns>",
+      "Short term: expand existing storage nodes (add disks or replace with larger ones)",
+      "Add new storage nodes to cluster — Rook will auto-rebalance",
+      "If pool full (>85%): emergency — disable nearfull ratio temporarily in CephCluster CR",
+      "Reduce replication factor only as last resort (impacts data safety)"
+    ],
+    "escalation": "If usage exceeds 85%, Ceph enters read-only mode. This is a P1 storage incident. Alert storage team immediately.",
+    "references": ["https://docs.ceph.com/en/reef/rados/configuration/mon-config-ref/#storage-capacity"]
+  },
+  {
+    "id": "RB-CEPH-005",
+    "title": "Rook-Ceph CSI Driver / RBD PVC Attach Failure",
+    "tags": ["rook-ceph", "csi", "pvc", "rbd", "volume"],
+    "symptoms": [
+      "Pod stuck in ContainerCreating with 'Unable to attach or mount volumes'",
+      "kubectl describe pod shows 'rbd: map failed exit status 5'",
+      "PVC in Bound state but pod cannot start",
+      "csi-rbdplugin pod in error state"
+    ],
+    "causes": [
+      "RBD kernel module not loaded on worker node",
+      "CSI provisioner/attacher pod crashed",
+      "Ceph cluster health degraded (CSI blocks on unhealthy cluster)",
+      "Node selector conflict — pod scheduled to node without RBD access",
+      "Stale volumeattachment object from previous failed attach"
+    ],
+    "investigation": [
+      "kubectl describe pod <failing-pod> -n <namespace>",
+      "kubectl -n rook-ceph get pods -l app=csi-rbdplugin",
+      "kubectl -n rook-ceph logs <csi-rbdplugin-pod> -c csi-rbdplugin --tail=100",
+      "kubectl get volumeattachment | grep <pv-name>",
+      "# On node (SSH): lsmod | grep rbd",
+      "# On node (SSH): dmesg | grep rbd | tail -20"
+    ],
+    "remediation": [
+      "Load RBD module on node: SSH to node, run 'modprobe rbd'",
+      "Make persistent: SSH to node, add 'rbd' to /etc/modules-load.d/rbd.conf",
+      "Restart CSI pods: kubectl -n rook-ceph rollout restart ds/csi-rbdplugin",
+      "Delete stale VolumeAttachment: kubectl delete volumeattachment <name>",
+      "If CSI provisioner crashed: kubectl -n rook-ceph rollout restart deploy/csi-rbdplugin-provisioner",
+      "For Flatcar: CSI driver may need specific kernel version — check compatibility"
+    ],
+    "escalation": "If multiple nodes cannot attach RBD volumes, this affects all storage-backed workloads. Escalate to platform team.",
+    "references": ["https://rook.io/docs/rook/latest/Troubleshooting/ceph-csi-common-issues/"]
+  },
+  {
+    "id": "RB-CEPH-006",
+    "title": "Rook-Ceph CephFilesystem / CephFS Subvolume Issues",
+    "tags": ["rook-ceph", "cephfs", "filesystem", "rwx"],
+    "symptoms": [
+      "RWX PVC stuck in Pending",
+      "Pod using CephFS mount shows 'mount: wrong fs type' error",
+      "MDS pods in CrashLoopBackOff",
+      "Alert: CephMdsMissingReplicas"
+    ],
+    "causes": [
+      "MDS daemon not running or crashed",
+      "CephFS kernel module missing on node",
+      "CephFilesystem CR not ready",
+      "Subvolume group not created"
+    ],
+    "investigation": [
+      "kubectl -n rook-ceph get pods -l app=rook-ceph-mds",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph fs status",
+      "kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph fs ls",
+      "kubectl -n rook-ceph logs <mds-pod> --tail=100",
+      "kubectl get cephfilesystem -n rook-ceph -o yaml"
+    ],
+    "remediation": [
+      "Restart MDS pods: kubectl -n rook-ceph delete pod -l app=rook-ceph-mds",
+      "Load kernel module on node: SSH to node, 'modprobe ceph'",
+      "Verify CephFilesystem CR is healthy: kubectl -n rook-ceph get cephfilesystem",
+      "Check csi-cephfsplugin daemonset: kubectl -n rook-ceph rollout restart ds/csi-cephfsplugin"
+    ],
+    "escalation": "RWX PVC failures affect stateful workloads needing shared storage. Escalate if MDS stays crashed after restart."
+  }
+]
