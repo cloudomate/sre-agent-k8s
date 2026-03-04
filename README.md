@@ -245,6 +245,18 @@ Add custom runbooks by dropping JSON files in `./runbooks/` (see existing files 
 ## Building Images
 
 ```bash
+# SRE Agent (multi-arch) — this is all you need when using an external LLM API
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t cr.imys.in/hci/sre-agent:latest --push .
+
+# Helm chart (OCI registry)
+helm package deploy/helm/sre-agent/
+helm push sre-agent-0.3.0.tgz oci://cr.imys.in/hci/sre-agent-k8s
+```
+
+The following are only needed if you want to run the in-cluster llama.cpp LLM server (`llamacpp.enabled=true`):
+
+```bash
 # Base llama.cpp server (multi-arch, llama.cpp b8196)
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f images/llama-server.Dockerfile \
@@ -257,12 +269,4 @@ docker build -f /path/to/images/llama-qwen3.Dockerfile \
   --build-arg MODEL_FILE=Qwen3.5-4B-Q4_0.gguf \
   -t cr.imys.in/hci/llama-qwen3.5-4b:latest .
 docker push cr.imys.in/hci/llama-qwen3.5-4b:latest
-
-# SRE Agent (multi-arch)
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t cr.imys.in/hci/sre-agent:latest --push .
-
-# Helm chart (OCI registry)
-helm package deploy/helm/sre-agent/
-helm push sre-agent-0.3.0.tgz oci://cr.imys.in/hci/sre-agent-k8s
 ```

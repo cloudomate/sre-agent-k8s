@@ -159,21 +159,21 @@ Add a Python function to [sre_agent/tools.py](sre_agent/tools.py) and register i
 ## Building images
 
 ```bash
-# Base llama.cpp server (multi-arch, b8196)
+# SRE Agent only (no model — use with external LLM API)
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t cr.imys.in/hci/sre-agent:latest --push .
+
+# Base llama.cpp server (only needed for in-cluster LLM)
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f images/llama-server.Dockerfile \
   -t cr.imys.in/hci/llama-server:latest --push .
 
-# Model image (GGUF must be in build context directory)
+# Model image (only needed for in-cluster LLM; GGUF must be in build context)
 cd /path/to/models
 docker build -f /path/to/images/llama-qwen3.Dockerfile \
   --build-arg MODEL_FILE=Qwen3.5-4B-Q4_0.gguf \
   -t cr.imys.in/hci/llama-qwen3.5-4b:latest .
 docker push cr.imys.in/hci/llama-qwen3.5-4b:latest
-
-# SRE Agent (multi-arch)
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t cr.imys.in/hci/sre-agent:latest --push .
 
 # Helm chart (OCI registry)
 helm package deploy/helm/sre-agent/
