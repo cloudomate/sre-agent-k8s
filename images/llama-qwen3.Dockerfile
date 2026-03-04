@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# llama.cpp server with Qwen3.5-4B (Q4_K_M) baked in.
-# Model is downloaded from the Ollama registry during build — no manual download needed.
+# llama.cpp server with Qwen3.5-4B (Q5_K_M) baked in.
+# Model is downloaded from Hugging Face (unsloth) during build.
 #
 # Build (run from project root):
 #   docker buildx build \
@@ -9,15 +9,14 @@
 #     -t cr.imys.in/hci/llama-qwen3.5-4b:latest \
 #     --push .
 
-# ── download model from Ollama registry ─────────────────────────────────────
+# ── download model from Hugging Face ──────────────────────────────────────
 FROM ubuntu:24.04 AS downloader
-RUN apt-get update && apt-get install -y --no-install-recommends curl jq ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /models && \
-    MANIFEST=$(curl -fsSL https://registry.ollama.ai/v2/library/qwen3.5/manifests/4b) && \
-    DIGEST=$(echo "$MANIFEST" | jq -r '.layers[] | select(.mediaType == "application/vnd.ollama.image.model") | .digest') && \
-    curl -fSL -o /models/qwen3.5.gguf "https://registry.ollama.ai/v2/library/qwen3.5/blobs/$DIGEST"
+    curl -fSL -o /models/qwen3.5.gguf \
+      "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q5_K_M.gguf"
 
 # ── final image ─────────────────────────────────────────────────────────────
 FROM cr.imys.in/hci/llama-server:latest
