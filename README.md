@@ -1,88 +1,198 @@
-# SRE Agent — Active Incident Investigator for HCI Platforms
+# SRE Agent — Kubernetes-native Incident Investigator
 
-An LLM-powered SRE agent that investigates service failures, collects evidence using real diagnostic tools, and produces structured incident reports. Runs fully local on **4–8 GB CPU RAM**.
+An LLM-powered SRE agent that automatically investigates service failures, collects evidence via the Kubernetes API and Prometheus, and produces structured incident reports with severity classification and category routing.
 
 ---
 
 ## Architecture
 
 ```
-HCI Portal / Alertmanager / Harvester Webhook
-          │
-          ▼
-   FastAPI Server  (port 8080)
-          │
-          ▼
-   SRE Agent (ReAct loop)
-   ┌───────────────────────────────┐
-   │  Think → Tool Call → Observe  │
-   │  (up to 12 steps)             │
-   │                               │
-   │  Ollama: Qwen 2.5 7B Q4      │
-   │  ~4.5 GB RAM, CPU-only        │
-   └───────────────────────────────┘
-          │
-          ▼
-   Structured Incident Report
-   → Slack / Webhook / File / stdout
+K8s Warning Events (watcher.py) ──┐
+Webhook / API (main.py)           ├──► SRE Agent ReAct loop (agent.py)
+Alertmanager webhook              ┘         │
+                                     Tool calls (tools.py)
+                                     Kubernetes Python client (in-cluster)
+                                     Prometheus HTTP queries
+                                     Loki / socket / HTTP checks
+                                            │
+                                     Runbook RAG lookup (runbook.py)
+                                            │
+                                     Report generation + delivery (reporter.py)
+                                     stdout │ file │ slack │ webhook │ email │ sms │ whatsapp
 ```
+
+### Classification
+
+- **Severity**: P1 (critical), P2 (warning), P3 (info) — explicit criteria in the LLM prompt with validation and fallback
+- **Category**: `infra`, `app`, `storage`, `network` — keyword-based inference when LLM output is invalid
+- **Event grouping**: 30-second window buffers Warning events by namespace. If >=3 services fire in the same namespace, they dispatch as a single grouped investigation (cascading failure detection). P1 events flush immediately.
 
 ---
 
-## Model
+## LLM Configuration
 
-| Model | RAM | Quality |
+The agent works with **any OpenAI-compatible endpoint**. Two modes:
+
+### Option A: External API (recommended for production)
+
+No local model needed — set `llamacpp.enabled=false` in Helm to skip the in-cluster LLM server.
+
+| Endpoint | LLM_BASE_URL | LLM_MODEL |
 |---|---|---|
-| `qwen2.5:7b-instruct-q4_K_M` (**default**) | ~4.5 GB | Best tool-calling in class |
-| `phi4-mini:q4` | ~2.5 GB | Lower RAM, acceptable quality |
-| `mistral:7b-q4` | ~4.5 GB | Alternative |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
+| Any OpenAI-compatible API | `https://your-api.example.com/v1` | `your-model-id` |
+| vLLM | `http://vllm:8000/v1` | `model-name` |
+
+### Option B: In-cluster llama.cpp (air-gapped / local)
+
+Deploy with `llamacpp.enabled=true` (default). The llama.cpp server runs as a sidecar deployment with the model baked into the image.
+
+| Endpoint | LLM_BASE_URL | LLM_MODEL |
+|---|---|---|
+| llama.cpp (in-cluster) | `http://llamacpp.sre-agent.svc.cluster.local:11434/v1` | `qwen3.5:4b` |
+| llama.cpp (local dev) | `http://localhost:11434/v1` | `qwen3.5:4b` |
+
+Current local model: Qwen3.5-4B Q4_0 (llama.cpp b8196). Requires ~4 GB RAM + 4 CPU cores.
 
 ---
 
 ## Quick Start
 
-### 1. Clone and configure
+### Kubernetes — Helm (external LLM)
 
 ```bash
-cp .env.example .env
-# Edit .env with your Prometheus URL, Slack webhook, etc.
+helm install sre-agent oci://cr.imys.in/hci/sre-agent-k8s/sre-agent \
+  --version 0.3.0 -n sre-agent --create-namespace \
+  --set llamacpp.enabled=false \
+  --set llm.baseUrl=https://your-api.example.com/v1 \
+  --set llm.apiKey=sk-your-key \
+  --set llm.model=your-model-id \
+  --set report.channels="stdout\,file\,email" \
+  --set smtp.host=mail.example.com --set smtp.port=587
+
+# Upgrade
+helm upgrade sre-agent oci://cr.imys.in/hci/sre-agent-k8s/sre-agent \
+  --version 0.3.0 -n sre-agent --reuse-values
 ```
 
-### 2. Start with Docker Compose
+### Kubernetes — Helm (local llama.cpp)
+
+```bash
+helm install sre-agent oci://cr.imys.in/hci/sre-agent-k8s/sre-agent \
+  --version 0.3.0 -n sre-agent --create-namespace \
+  --set llm.apiKey=llamacpp \
+  --set report.channels="stdout\,file\,email" \
+  --set smtp.host=192.168.4.102 --set smtp.port=1025 --set smtp.tls=false
+```
+
+### Kubernetes — Kustomize
+
+```bash
+# 1. Edit deploy/kustomize/configmap.yaml — set LLM_BASE_URL, LLM_MODEL, PROMETHEUS_URL
+# 2. Edit deploy/kustomize/secret.yaml    — set LLM_API_KEY (base64), SLACK_WEBHOOK_URL, etc.
+kubectl apply -k deploy/kustomize/
+```
+
+### Local development
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env: set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, K8S_IN_CLUSTER=false
+python -m uvicorn sre_agent.main:app --host 0.0.0.0 --port 8080 --workers 1
+```
+
+### Docker Compose (local llama.cpp + agent)
 
 ```bash
 docker compose up -d
 ```
 
-This starts Ollama (pulls the model automatically) and the SRE agent API.
+---
 
-### 3. Trigger a manual investigation
+## Trigger an Investigation
 
 ```bash
-curl -X POST http://localhost:8080/incidents \
+curl -X POST http://sre-agent:8080/incidents \
   -H "Content-Type: application/json" \
   -d '{
-    "service": "vm-api",
-    "namespace": "production",
+    "service": "my-service",
+    "namespace": "default",
     "error_type": "CrashLoopBackOff",
-    "alert_source": "manual",
     "severity": "P2"
   }'
-```
 
-### 4. Poll for results
+# Poll for results
+curl http://sre-agent:8080/incidents/{incident_id}
 
-```bash
-curl http://localhost:8080/incidents/inc-20260228-143022-abc123
+# List incidents (with optional filtering)
+curl "http://sre-agent:8080/incidents?severity=P1&category=storage"
 ```
 
 ---
 
-## Integration with Your HCI Portal
+## Report Output
 
-### Option A: Direct API call when a service goes unhealthy
+Reports include severity, category, evidence, timeline, and recommended actions:
 
-In your portal's health check logic:
+```json
+{
+  "incident_id": "inc-20260304-145321-0e9d74",
+  "severity": "P2",
+  "category": "app",
+  "title": "test-app CrashLoopBackOff in default namespace",
+  "affected_service": "test-app",
+  "affected_namespace": "default",
+  "investigation_summary": "The incident reports a CrashLoopBackOff for test-app...",
+  "root_cause": "unknown",
+  "evidence": [
+    "get_pod_status with label app=test-app returned empty list",
+    "get_deployment_status for test-app returned Not Found error"
+  ],
+  "timeline": ["2026-03-04T14:53:21Z: Incident created"],
+  "recommended_actions": [
+    {"action": "Verify deployment manifest exists", "priority": "immediate", "safe_to_automate": false}
+  ],
+  "runbook_refs": ["RB-002", "RB-K8S-005"],
+  "requires_escalation": true,
+  "escalation_reason": "Unable to locate pods or deployment",
+  "confidence": "low",
+  "investigation_duration_s": 24.8,
+  "tool_calls_made": 12
+}
+```
+
+Reports are delivered to all configured channels: `stdout`, `file` (JSON + Markdown), `slack` (Block Kit), `webhook`, `email` (SMTP), `sms` (Twilio), `whatsapp` (Twilio).
+
+Email subjects include severity and category: `[SRE Alert] [P2] [APP] test-app CrashLoopBackOff — test-app`
+
+---
+
+## Event Watcher
+
+The agent watches Kubernetes Warning events cluster-wide and auto-triggers investigations:
+
+- **Trigger reasons**: Unhealthy, BackOff, OOMKilling, Failed, FailedMount, FailedScheduling, Evicted, NodeNotReady, KillContainer, NetworkNotReady
+- **Ignored namespaces**: `kube-system`, `kube-public`, `kube-node-lease`, `sre-agent`
+- **Cooldown**: 15 min per service/namespace (configurable via `WATCH_COOLDOWN_SECONDS`)
+- **Grouping**: 30s window per namespace. >=3 services = single grouped investigation. P1 events flush immediately.
+- **Env vars**: `WATCH_EVENTS=true`, `WATCH_COOLDOWN_SECONDS=900`, `WATCH_GROUP_WINDOW=30`
+
+---
+
+## Integration
+
+### Alertmanager webhook
+
+```yaml
+receivers:
+  - name: sre-agent
+    webhook_configs:
+      - url: http://sre-agent:8080/incidents/webhook/alertmanager
+        send_resolved: false
+```
+
+### Direct API call
 
 ```python
 import httpx
@@ -93,98 +203,9 @@ async def trigger_investigation(service: str, namespace: str, error: str):
             "service": service,
             "namespace": namespace,
             "error_type": error,
-            "alert_source": "portal-healthcheck",
             "severity": "P2",
         })
     return resp.json()["incident_id"]
-```
-
-### Option B: Alertmanager webhook
-
-In `alertmanager.yml`:
-
-```yaml
-receivers:
-  - name: sre-agent
-    webhook_configs:
-      - url: http://sre-agent:8080/incidents/webhook/alertmanager
-        send_resolved: false
-
-route:
-  receiver: sre-agent
-  group_wait: 30s
-  group_interval: 5m
-```
-
-### Option C: Harvester portal webhook
-
-Set your Harvester notification URL to:
-```
-http://sre-agent:8080/incidents/webhook/harvester
-```
-
----
-
-## Report Output
-
-```json
-{
-  "incident_id": "inc-20260228-143022-abc123",
-  "severity": "P2",
-  "title": "vm-api OOMKilled due to memory limit",
-  "affected_service": "vm-api",
-  "affected_namespace": "production",
-  "investigation_summary": "The vm-api pod was repeatedly killed by the OOM killer. Memory usage peaked at 820MB against a 512MB limit during a traffic spike at 14:28 UTC.",
-  "root_cause": "Memory limit of 512MB is insufficient. Pod consumed 820MB before OOMKill.",
-  "evidence": [
-    "kubectl describe pod shows OOMKilled in Last State",
-    "Exit code 137 confirms OOM kill",
-    "kubectl top shows memory at 98% of limit before kill",
-    "Prometheus: request rate spike 3x at 14:25 UTC"
-  ],
-  "timeline": [
-    "14:25 UTC: Request rate spike 3x normal",
-    "14:28 UTC: Memory hits 512MB limit",
-    "14:28 UTC: OOMKilled by kernel"
-  ],
-  "recommended_actions": [
-    {
-      "action": "Increase memory limit to 1.5GB in deployment spec",
-      "priority": "immediate",
-      "safe_to_automate": false
-    },
-    {
-      "action": "Investigate memory growth pattern — possible leak in v2.3.1",
-      "priority": "short-term",
-      "safe_to_automate": false
-    }
-  ],
-  "runbook_refs": ["RB-001"],
-  "requires_escalation": false,
-  "confidence": "high",
-  "investigation_duration_s": 34.2,
-  "tool_calls_made": 5
-}
-```
-
----
-
-## Adding Your Own Runbooks
-
-Drop a JSON file in `./runbooks/` (see `example_runbook.json` for schema).
-The agent will automatically embed and search them.
-
-```json
-[
-  {
-    "id": "RB-100",
-    "title": "My Service - DB Connection Failure",
-    "tags": ["database", "connection", "pool"],
-    "summary": "Service cannot connect to database.",
-    "steps": ["Check DB pod health", "Verify connection string", "..."],
-    "causes": ["DB crashed", "Wrong credentials", "Network partition"]
-  }
-]
 ```
 
 ---
@@ -195,7 +216,7 @@ The agent will automatically embed and search them.
 |---|---|---|
 | `POST /incidents` | POST | Trigger investigation |
 | `GET /incidents/{id}` | GET | Get incident status + report |
-| `GET /incidents` | GET | List recent incidents |
+| `GET /incidents` | GET | List incidents (optional `?severity=P1&category=storage`) |
 | `POST /incidents/webhook/alertmanager` | POST | Alertmanager receiver |
 | `POST /incidents/webhook/harvester` | POST | Harvester portal webhook |
 | `GET /runbooks?query=oom` | GET | Browse/search runbooks |
@@ -203,12 +224,45 @@ The agent will automatically embed and search them.
 
 ---
 
-## Hardware Requirements
+## Runbooks (57 total)
 
-| Component | Min RAM | Recommended |
+| File | Count | Coverage |
 |---|---|---|
-| Ollama (Qwen 2.5 7B Q4) | 4.5 GB | 6 GB |
-| SRE Agent API | 256 MB | 512 MB |
-| Total | **~5 GB** | **~7 GB** |
+| `kubernetes-core-runbooks.json` | 8 | etcd, apiserver, node NotReady, certs, OOMKill, Flatcar, PVC, CoreDNS |
+| `ismp-runbooks.json` | 9 | ISMP platform runbooks |
+| `uphci-runbooks.json` | 8 | upHCI platform runbooks |
+| `rook-ceph-runbooks.json` | 6 | Ceph cluster health, OSD, MON, pool full, CSI |
+| `kube-prometheus-runbooks.json` | 5 | Prometheus storage, scrape failures, Alertmanager |
+| `kubevirt-runbooks.json` | 4 | VM not starting, virt-launcher, live migration |
+| `kube-ovn-runbooks.json` | 4 | CNI failure, subnet/IP allocation, OVN controller |
+| `metallb-runbooks.json` | 3 | LoadBalancer IP pending, speaker crash, IP conflict |
+| Built-in (runbook.py) | 10 | OOMKill, CrashLoop, ImagePull, Pending, NodeNotReady, 5xx, PVC, HCI VM, etcd, cert expiry |
 
-Works fine on a 8GB node. For 4GB nodes, switch to `phi4-mini:q4` (~2.5GB).
+Add custom runbooks by dropping JSON files in `./runbooks/` (see existing files for schema).
+
+---
+
+## Building Images
+
+```bash
+# Base llama.cpp server (multi-arch, llama.cpp b8196)
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f images/llama-server.Dockerfile \
+  -t cr.imys.in/hci/llama-server:latest --push .
+
+# Model image (GGUF must be in build context directory)
+# Build on a machine where the .gguf file is available:
+cd /path/to/models
+docker build -f /path/to/images/llama-qwen3.Dockerfile \
+  --build-arg MODEL_FILE=Qwen3.5-4B-Q4_0.gguf \
+  -t cr.imys.in/hci/llama-qwen3.5-4b:latest .
+docker push cr.imys.in/hci/llama-qwen3.5-4b:latest
+
+# SRE Agent (multi-arch)
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t cr.imys.in/hci/sre-agent:latest --push .
+
+# Helm chart (OCI registry)
+helm package deploy/helm/sre-agent/
+helm push sre-agent-0.3.0.tgz oci://cr.imys.in/hci/sre-agent-k8s
+```

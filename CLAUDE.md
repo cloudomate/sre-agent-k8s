@@ -17,23 +17,34 @@ SRE Agent is an LLM-powered automated incident investigation system for Hypercon
 kubectl apply -k deploy/kustomize/
 ```
 
-### Kubernetes — Helm
+### Kubernetes — Helm (external LLM, recommended)
 
 ```bash
-helm install sre-agent deploy/helm/sre-agent/ \
-  --namespace sre-agent --create-namespace \
+helm install sre-agent oci://cr.imys.in/hci/sre-agent-k8s/sre-agent \
+  --version 0.3.0 -n sre-agent --create-namespace \
+  --set llamacpp.enabled=false \
+  --set llm.baseUrl=https://your-api.example.com/v1 \
+  --set llm.apiKey=sk-your-key \
+  --set llm.model=your-model-id \
+  --set report.channels="stdout\,file\,email" \
+  --set smtp.host=mail.example.com --set smtp.port=587
+```
+
+### Kubernetes — Helm (local llama.cpp)
+
+```bash
+helm install sre-agent oci://cr.imys.in/hci/sre-agent-k8s/sre-agent \
+  --version 0.3.0 -n sre-agent --create-namespace \
   --set llm.apiKey=llamacpp \
-  --set smtp.host=192.168.4.102 \
-  --set smtp.port=1025 \
-  --set smtp.tls=false \
-  --set report.channels="stdout,file,email"
+  --set report.channels="stdout\,file\,email" \
+  --set smtp.host=192.168.4.102 --set smtp.port=1025 --set smtp.tls=false
 
 # Upgrade after changes
-helm upgrade sre-agent deploy/helm/sre-agent/ -n sre-agent
-
-# Dry-run / lint
-helm template sre-agent deploy/helm/sre-agent/ | kubectl apply --dry-run=client -f -
+helm upgrade sre-agent oci://cr.imys.in/hci/sre-agent-k8s/sre-agent \
+  --version 0.3.0 -n sre-agent --reuse-values
 ```
+
+Note: escape commas in `--set` values with `\,` (Helm parses commas as value separators).
 
 ### Local development
 
@@ -84,7 +95,7 @@ Alertmanager webhook              ┘         ↓
 
 **[sre_agent/tools.py](sre_agent/tools.py)** — All 12 diagnostic tools. Uses the `kubernetes` Python client for all K8s operations (pods, logs, events, deployments, resource quotas, KubeVirt VMIs). Initialises with `load_incluster_config()` when `K8S_IN_CLUSTER=true`, falls back to `load_kube_config()` for local dev. Non-K8s diagnostic commands (`df`, `free`, `ping`, etc.) still use a whitelisted subprocess path. kubectl is not installed in the image.
 
-**[sre_agent/watcher.py](sre_agent/watcher.py)** — Background Kubernetes event watcher. Streams `Warning` events cluster-wide via `kubernetes.watch.Watch()` and auto-triggers investigations. Ignores `kube-system`, `kube-public`, `kube-node-lease`, `sre-agent` namespaces. 15-minute cooldown per service prevents alert storms. Controlled by `WATCH_EVENTS` and `WATCH_COOLDOWN_SECONDS` env vars.
+**[sre_agent/watcher.py](sre_agent/watcher.py)** — Background Kubernetes event watcher. Streams `Warning` events cluster-wide via `kubernetes.watch.Watch()` and auto-triggers investigations. Ignores `kube-system`, `kube-public`, `kube-node-lease`, `sre-agent` namespaces. 15-minute cooldown per service prevents alert storms. 30-second grouping window buffers events by namespace — if >=3 services fire in the same namespace, they dispatch as a single grouped investigation (cascading failure). P1 events (OOMKilling, NodeNotReady, NetworkNotReady) flush the group immediately. Controlled by `WATCH_EVENTS`, `WATCH_COOLDOWN_SECONDS`, and `WATCH_GROUP_WINDOW` env vars.
 
 **[sre_agent/main.py](sre_agent/main.py)** — FastAPI server with in-memory incident store. Investigations run in a `ThreadPoolExecutor` (max 2 workers). Returns `incident_id` immediately; clients poll `GET /incidents/{id}`. Starts the event watcher thread on startup.
 
@@ -105,22 +116,23 @@ Alertmanager webhook              ┘         ↓
 
 **External access** ([deploy/kustomize/service.yaml](deploy/kustomize/service.yaml)): Two services — `sre-agent` (ClusterIP, internal on port 8080) and `sre-agent-external` (LoadBalancer, external on port 80 → 8080). Optional Ingress in [deploy/kustomize/ingress.yaml](deploy/kustomize/ingress.yaml) or via `ingress.enabled=true` in Helm values.
 
-**LLM inference** ([deploy/kustomize/llamacpp.yaml](deploy/kustomize/llamacpp.yaml) / Helm `llamacpp.enabled=true`): llama.cpp server deployment with model baked into image (`cr.imys.in/hci/llama-qwen3-4b:latest`). Service `llamacpp` on port 11434. Built from `images/llama-server.Dockerfile` (base) + `images/llama-qwen3.Dockerfile` (model layer). Key args: `--ctx-size 16384 --parallel 2`.
+**LLM inference** — Two modes: (1) **External API** — set `llamacpp.enabled=false` in Helm and configure `LLM_BASE_URL` + `LLM_API_KEY` to any OpenAI-compatible endpoint. No local model resources needed. (2) **In-cluster llama.cpp** ([deploy/kustomize/llamacpp.yaml](deploy/kustomize/llamacpp.yaml) / Helm `llamacpp.enabled=true`): llama.cpp server (b8196) with model baked into image (`cr.imys.in/hci/llama-qwen3.5-4b:latest`). Built from `images/llama-server.Dockerfile` (base) + `images/llama-qwen3.Dockerfile` (model layer, uses `MODEL_FILE` build arg to COPY a local GGUF). Key args: `--ctx-size 16384 --parallel 2`.
 
 **Config** ([deploy/kustomize/configmap.yaml](deploy/kustomize/configmap.yaml)): Non-secret config. **Secrets** ([deploy/kustomize/secret.yaml](deploy/kustomize/secret.yaml)): `LLM_API_KEY`, `SLACK_WEBHOOK_URL`, `REPORT_WEBHOOK_URL`, `TWILIO_*`, `SMTP_PASSWORD` — base64-encoded. In Helm, pass these via `--set` or a values override file.
 
 ## LLM configuration
 
-The agent supports any OpenAI-compatible endpoint via `LLM_BASE_URL` + `LLM_API_KEY`:
+The agent supports any OpenAI-compatible endpoint via `LLM_BASE_URL` + `LLM_API_KEY`. For production, use an external API with `llamacpp.enabled=false` in Helm to avoid consuming cluster resources.
 
-| Endpoint | LLM_BASE_URL | LLM_API_KEY |
-| --- | --- | --- |
-| llama.cpp (local) | `http://localhost:11434/v1` | `llamacpp` |
-| llama.cpp (in-cluster) | `http://llamacpp.sre-agent.svc.cluster.local:11434/v1` | `llamacpp` |
-| OpenAI | `https://api.openai.com/v1` | `sk-...` |
-| vLLM | `http://vllm:8000/v1` | `token` |
+| Endpoint | LLM_BASE_URL | LLM_API_KEY | llamacpp.enabled |
+| --- | --- | --- | --- |
+| External API | `https://your-api.example.com/v1` | `sk-...` | `false` |
+| OpenAI | `https://api.openai.com/v1` | `sk-...` | `false` |
+| llama.cpp (in-cluster) | `http://llamacpp.sre-agent.svc.cluster.local:11434/v1` | `llamacpp` | `true` |
+| llama.cpp (local dev) | `http://localhost:11434/v1` | `llamacpp` | N/A |
+| vLLM | `http://vllm:8000/v1` | `token` | `false` |
 
-Current model: `Qwen3.5-4B` Q4_K_M from Ollama (model ID: `qwen3.5:4b`).
+Local model: Qwen3.5-4B Q4_0 on llama.cpp b8196 (model ID: `qwen3.5:4b`).
 
 ## Runbooks (57 total, baked into image at /app/runbooks)
 
@@ -138,7 +150,7 @@ Current model: `Qwen3.5-4B` Q4_K_M from Ollama (model ID: `qwen3.5:4b`).
 
 ## Incident report schema
 
-The agent outputs structured JSON with: `incident_id`, `severity` (P1/P2/P3), `title`, `root_cause`, `evidence[]`, `recommended_actions[]` (with `priority` and `safe_to_automate`), `requires_escalation`, `confidence` (high/medium/low), and investigation metadata.
+The agent outputs structured JSON with: `incident_id`, `severity` (P1/P2/P3), `category` (infra/app/storage/network), `title`, `root_cause`, `evidence[]`, `recommended_actions[]` (with `priority` and `safe_to_automate`), `requires_escalation`, `confidence` (high/medium/low), and investigation metadata. Severity and category are validated; invalid LLM output falls back to the initial alert severity and keyword-based category inference.
 
 ## Adding new tools
 
@@ -147,17 +159,23 @@ Add a Python function to [sre_agent/tools.py](sre_agent/tools.py) and register i
 ## Building images
 
 ```bash
-# Base llama.cpp server (multi-arch)
+# Base llama.cpp server (multi-arch, b8196)
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f images/llama-server.Dockerfile \
   -t cr.imys.in/hci/llama-server:latest --push .
 
-# Model image (downloads Qwen3.5:4b from Ollama registry during build)
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -f images/llama-qwen3.Dockerfile \
-  -t cr.imys.in/hci/llama-qwen3.5-4b:latest --push .
+# Model image (GGUF must be in build context directory)
+cd /path/to/models
+docker build -f /path/to/images/llama-qwen3.Dockerfile \
+  --build-arg MODEL_FILE=Qwen3.5-4B-Q4_0.gguf \
+  -t cr.imys.in/hci/llama-qwen3.5-4b:latest .
+docker push cr.imys.in/hci/llama-qwen3.5-4b:latest
 
-# SRE Agent
+# SRE Agent (multi-arch)
 docker buildx build --platform linux/amd64,linux/arm64 \
   -t cr.imys.in/hci/sre-agent:latest --push .
+
+# Helm chart (OCI registry)
+helm package deploy/helm/sre-agent/
+helm push sre-agent-*.tgz oci://cr.imys.in/hci/sre-agent-k8s
 ```
