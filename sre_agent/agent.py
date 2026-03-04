@@ -15,6 +15,30 @@ from .tools import TOOL_DEFINITIONS, execute_tool
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
+# Category inference (keyword fallback when LLM output is invalid)
+# ─────────────────────────────────────────────────────────────
+
+_VALID_SEVERITIES = {"P1", "P2", "P3"}
+_VALID_CATEGORIES = {"infra", "app", "storage", "network"}
+
+_CATEGORY_KEYWORDS = {
+    "storage": ["ceph", "osd", "mon", "pvc", "volume", "rbd", "disk", "storage", "rook", "csi"],
+    "network": ["cni", "ovn", "dns", "coredns", "metallb", "loadbalancer", "network", "subnet", "ip-"],
+    "infra": ["node", "kubelet", "etcd", "apiserver", "control-plane", "certificate", "flatcar", "reboot"],
+    "app": ["crashloop", "oomkill", "imagepull", "backoff", "restart", "5xx", "deployment", "probe"],
+}
+
+
+def _infer_category(incident: dict) -> str:
+    """Keyword-based category fallback when LLM output is missing or invalid."""
+    text = f"{incident.get('service', '')} {incident.get('error_type', '')}".lower()
+    for cat, keywords in _CATEGORY_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return cat
+    return "app"
+
+
+# ─────────────────────────────────────────────────────────────
 # System prompt
 # ─────────────────────────────────────────────────────────────
 
@@ -39,6 +63,48 @@ When given an incident, follow this process strictly:
 - If a fix requires destructive action (delete pod, restart service), call escalate_to_human instead.
 - Stop investigating after 10 tool calls and produce your best report with available evidence.
 
+## Severity Classification
+
+Assign severity based on BLAST RADIUS and URGENCY:
+
+**P1 — Critical (service down, data at risk, cluster-wide impact)**
+- Multiple nodes NotReady simultaneously
+- etcd quorum lost or control plane unresponsive
+- Ceph HEALTH_ERR or MON quorum lost (storage outage)
+- OOM kills on critical infrastructure (etcd, API server, Ceph MON/OSD)
+- CNI failure affecting multiple nodes (pods cannot get IPs)
+- All replicas of a service are down (complete outage)
+- Certificate expiry blocking authentication cluster-wide
+- Data loss risk (Ceph pool full >85%, OSD count below min_size)
+
+**P2 — Warning (degraded service, single-component failure)**
+- Single pod CrashLoopBackOff or OOMKilled (service partially available)
+- Single node NotReady (workloads can reschedule)
+- Single OSD down (Ceph degraded but not at risk)
+- ImagePullBackOff (deployment blocked but not outage)
+- PVC stuck in Pending (new storage blocked)
+- High error rate (>10% 5xx) but service still responding
+- Failed volume mount on one pod
+- Pod evicted due to node pressure
+
+**P3 — Info (non-urgent, no immediate user impact)**
+- FailedScheduling for non-critical pods
+- Prometheus scrape target down (monitoring gap)
+- Single probe failure (Unhealthy) that self-resolved
+- DNS intermittent failures under high load
+- Resource quota warning (approaching limits, not exceeded)
+- Non-critical pod restart (<3 restarts in 30 min)
+
+When in doubt between two levels, choose the HIGHER severity.
+
+## Incident Categories
+
+Classify each incident into exactly ONE category:
+- **infra** — Node, kubelet, control plane (etcd, API server), OS-level issues
+- **app** — Application crashes, CrashLoopBackOff, OOMKill, image pull failures, deployment issues
+- **storage** — Ceph, PVC, volume mount, disk health, CSI driver issues
+- **network** — CNI (Kube-OVN), DNS (CoreDNS), MetalLB, connectivity, network policy issues
+
 ## Output Format (REQUIRED at the end)
 
 When you have finished investigating, respond ONLY with this JSON block (no other text):
@@ -47,6 +113,7 @@ When you have finished investigating, respond ONLY with this JSON block (no othe
 {
   "incident_id": "string",
   "severity": "P1|P2|P3",
+  "category": "infra|app|storage|network",
   "title": "short one-line description",
   "affected_service": "string",
   "affected_namespace": "string",
@@ -114,7 +181,10 @@ class SREAgent:
             runbooks = self.runbook_searcher.search(symptom, top_k=2)
             if runbooks:
                 runbook_context = "\n\nRelevant runbooks for context:\n" + "\n".join(
-                    f"- [{r['id']}] {r['title']}: {r.get('summary') or (r.get('symptoms') or [''])[0]}"
+                    f"- [{r['id']}] {r['title']}: "
+                    f"{r.get('summary') or (r.get('symptoms') or [''])[0]}"
+                    f"{' | Escalation: ' + r['escalation'] if r.get('escalation') else ''}"
+                    f"{' | Tags: ' + ', '.join(r.get('tags', [])) if r.get('tags') else ''}"
                     for r in runbooks
                 )
 
@@ -217,13 +287,20 @@ class SREAgent:
                 report.setdefault("incident_id", incident_id)
                 report.setdefault("affected_service", incident.get("service", "unknown"))
                 report.setdefault("raw_agent_output", text if len(text) < 200 else None)
+                # Validate severity — fall back to initial severity from alert source
+                if report.get("severity") not in _VALID_SEVERITIES:
+                    report["severity"] = incident.get("severity", "P2")
+                # Validate category — fall back to keyword inference
+                if report.get("category") not in _VALID_CATEGORIES:
+                    report["category"] = _infer_category(incident)
                 return report
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse report JSON: {e}. Raw: {text[:300]}")
 
         return {
             "incident_id": incident_id,
-            "severity": "P2",
+            "severity": incident.get("severity", "P2"),
+            "category": _infer_category(incident),
             "title": "Investigation complete (unstructured output)",
             "affected_service": incident.get("service", "unknown"),
             "root_cause": "unknown",
@@ -237,7 +314,8 @@ class SREAgent:
     def _error_report(self, incident_id: str, incident: dict, reason: str) -> dict:
         return {
             "incident_id": incident_id,
-            "severity": "P2",
+            "severity": incident.get("severity", "P2"),
+            "category": _infer_category(incident),
             "title": "Investigation failed",
             "affected_service": incident.get("service", "unknown"),
             "root_cause": "unknown",

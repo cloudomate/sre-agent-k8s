@@ -45,6 +45,7 @@ def format_markdown(report: dict) -> str:
         f"# {emoji} Incident Report: {report.get('title', 'Service Failure')}",
         f"**ID**: `{report.get('incident_id', 'N/A')}`  |  "
         f"**Severity**: {sev}  |  "
+        f"**Category**: {report.get('category', 'unknown').upper()}  |  "
         f"**Confidence**: {conf_emoji} {conf.upper()}",
         f"**Service**: `{report.get('affected_service', 'unknown')}`  |  "
         f"**Namespace**: `{report.get('affected_namespace', 'unknown')}`",
@@ -114,8 +115,10 @@ def format_sms(report: dict) -> str:
     if actions:
         first_action = f"\nAction: {actions[0].get('action', '')}"
 
+    category = report.get("category", "unknown").upper()
+
     return (
-        f"[SRE Alert] {sev}{escalation}\n"
+        f"[SRE Alert] {sev} [{category}]{escalation}\n"
         f"Service: {service} ({ns})\n"
         f"Cause: {root_cause}"
         f"{first_action}\n"
@@ -171,6 +174,7 @@ def format_slack_payload(report: dict) -> dict:
                             {"type": "mrkdwn", "text": f"*Incident ID*\n`{report.get('incident_id', 'N/A')}`"},
                             {"type": "mrkdwn", "text": f"*Service*\n`{report.get('affected_service', 'unknown')}`"},
                             {"type": "mrkdwn", "text": f"*Namespace*\n`{report.get('affected_namespace', 'unknown')}`"},
+                            {"type": "mrkdwn", "text": f"*Category*\n`{report.get('category', 'unknown').upper()}`"},
                             {"type": "mrkdwn", "text": f"*Confidence*\n{conf_emoji} {conf.upper()}"},
                         ],
                     },
@@ -372,8 +376,9 @@ def _deliver_email(report: dict):
         return
 
     sev = report.get("severity", "P2")
+    category = report.get("category", "unknown").upper()
     subject = (
-        f"[SRE Alert] [{sev}] {report.get('title', 'Service Failure')} "
+        f"[SRE Alert] [{sev}] [{category}] {report.get('title', 'Service Failure')} "
         f"— {report.get('affected_service', 'unknown')}"
     )
 

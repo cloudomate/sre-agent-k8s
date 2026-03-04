@@ -151,6 +151,8 @@ def _run_investigation(incident_id: str, incident_data: dict):
 
         _incidents[incident_id]["status"] = "complete"
         _incidents[incident_id]["report"] = report
+        _incidents[incident_id]["severity"] = report.get("severity", "P2")
+        _incidents[incident_id]["category"] = report.get("category", "unknown")
         _incidents[incident_id]["completed_at"] = datetime.utcnow().isoformat()
 
         publish_report(report)
@@ -220,13 +222,18 @@ async def get_incident(incident_id: str):
 
 
 @app.get("/incidents")
-async def list_incidents(limit: int = 20):
-    """List recent incidents."""
-    items = sorted(
-        _incidents.values(),
-        key=lambda x: x.get("created_at", ""),
-        reverse=True,
-    )[:limit]
+async def list_incidents(
+    limit: int = 20,
+    severity: Optional[str] = None,
+    category: Optional[str] = None,
+):
+    """List recent incidents. Optionally filter by severity (P1/P2/P3) or category (infra/app/storage/network)."""
+    items = list(_incidents.values())
+    if severity:
+        items = [i for i in items if i.get("severity") == severity]
+    if category:
+        items = [i for i in items if i.get("category") == category]
+    items = sorted(items, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]
     return {"incidents": items, "total": len(_incidents)}
 
 
