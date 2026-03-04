@@ -3,7 +3,7 @@
 # amd64: uses the pre-built GitHub release binary + bundled shared libs
 # arm64: compiles from source natively on Apple Silicon
 
-ARG LLAMA_VERSION=b8182
+ARG LLAMA_VERSION=b8196
 
 FROM ubuntu:24.04 AS builder
 ARG LLAMA_VERSION
