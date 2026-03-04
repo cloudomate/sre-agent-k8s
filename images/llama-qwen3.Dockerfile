@@ -1,28 +1,22 @@
 # syntax=docker/dockerfile:1
-# llama.cpp server with Qwen3.5-4B (Q5_K_M) baked in.
-# Model is downloaded from Hugging Face (unsloth) during build.
+# llama.cpp server with Qwen3.5-4B baked in.
+# Model GGUF must be placed in the build context directory.
 #
-# Build (run from project root):
-#   docker buildx build \
-#     --platform linux/amd64,linux/arm64 \
+# Build (from directory containing the .gguf file):
+#   docker build \
 #     -f images/llama-qwen3.Dockerfile \
-#     -t cr.imys.in/hci/llama-qwen3.5-4b:latest \
-#     --push .
+#     --build-arg MODEL_FILE=Qwen3.5-4B-Q4_0.gguf \
+#     -t cr.imys.in/hci/llama-qwen3.5-4b:latest .
+#
+#   docker push cr.imys.in/hci/llama-qwen3.5-4b:latest
 
-# ── download model from Hugging Face ──────────────────────────────────────
-FROM ubuntu:24.04 AS downloader
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+ARG MODEL_FILE=Qwen3.5-4B-Q4_0.gguf
 
-RUN mkdir -p /models && \
-    curl -fSL -o /models/qwen3.5.gguf \
-      "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q5_K_M.gguf"
-
-# ── final image ─────────────────────────────────────────────────────────────
 FROM cr.imys.in/hci/llama-server:latest
 
+ARG MODEL_FILE
 RUN mkdir -p /models
-COPY --from=downloader /models/qwen3.5.gguf /models/qwen3.5.gguf
+COPY ${MODEL_FILE} /models/qwen3.5.gguf
 
 CMD ["--model", "/models/qwen3.5.gguf", \
      "--host", "0.0.0.0", \
