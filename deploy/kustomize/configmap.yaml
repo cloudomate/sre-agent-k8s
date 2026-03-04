@@ -9,7 +9,7 @@ data:
   # OpenAI:               https://api.openai.com/v1
   # vLLM in-cluster:      http://vllm.sre-agent.svc.cluster.local:8000/v1
   LLM_BASE_URL: "http://llamacpp.sre-agent.svc.cluster.local:11434/v1"
-  LLM_MODEL: "qwen3.gguf"
+  LLM_MODEL: "qwen3.5:4b"
   LLM_EMBED_MODEL: "nomic-embed-text"
   AGENT_MAX_STEPS: "12"
   LLM_TIMEOUT: "300"

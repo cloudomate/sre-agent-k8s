@@ -37,12 +37,12 @@ spec:
       containers:
         - name: llama-server
           # Model is baked in — starts immediately, no download on startup
-          image: cr.imys.in/hci/llama-qwen3-4b:latest
+          image: cr.imys.in/hci/llama-qwen3.5-4b:latest
           imagePullPolicy: Always
           # Args override CMD defaults in the image
           args:
             - "--model"
-            - "/models/qwen3.gguf"
+            - "/models/qwen3.5.gguf"
             - "--host"
             - "0.0.0.0"
             - "--port"

@@ -12,7 +12,7 @@ class LLMConfig:
     # Supports any OpenAI-compatible endpoint: Ollama, vLLM, OpenAI, etc.
     base_url: str = os.getenv("LLM_BASE_URL", "http://ollama:11434/v1")
     api_key: str = os.getenv("LLM_API_KEY", "ollama")  # "ollama" for local, real key for cloud
-    model: str = os.getenv("LLM_MODEL", "qwen3:4b")
+    model: str = os.getenv("LLM_MODEL", "qwen3.5:4b")
     embed_model: str = os.getenv("LLM_EMBED_MODEL", "nomic-embed-text")
     timeout: int = int(os.getenv("LLM_TIMEOUT", "120"))
     max_agent_steps: int = int(os.getenv("AGENT_MAX_STEPS", "12"))

@@ -13,7 +13,7 @@ llm:
   # llamacpp in-cluster: http://llamacpp.sre-agent.svc.cluster.local:11434/v1
   # OpenAI:              https://api.openai.com/v1
   baseUrl: "http://llamacpp.{{ .Release.Namespace }}.svc.cluster.local:11434/v1"
-  model: "qwen3.gguf"
+  model: "qwen3.5:4b"
   embedModel: "nomic-embed-text"
   timeout: 300
   maxSteps: 12
@@ -113,7 +113,7 @@ logLevel: "INFO"
 llamacpp:
   enabled: true
   image:
-    repository: cr.imys.in/hci/llama-qwen3-4b
+    repository: cr.imys.in/hci/llama-qwen3.5-4b
     tag: latest
     pullPolicy: Always
   ctxSize: 16384

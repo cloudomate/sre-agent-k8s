@@ -120,7 +120,7 @@ The agent supports any OpenAI-compatible endpoint via `LLM_BASE_URL` + `LLM_API_
 | OpenAI | `https://api.openai.com/v1` | `sk-...` |
 | vLLM | `http://vllm:8000/v1` | `token` |
 
-Current model: `Qwen3-4B-Instruct-2507-Q5_K_L` (model ID: `qwen3.gguf`).
+Current model: `Qwen3.5-4B` Q4_K_M from Ollama (model ID: `qwen3.5:4b`).
 
 ## Runbooks (57 total, baked into image at /app/runbooks)
 
@@ -152,10 +152,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
   -f images/llama-server.Dockerfile \
   -t cr.imys.in/hci/llama-server:latest --push .
 
-# Model image (GGUF must be in /tmp/llama-build/)
+# Model image (downloads Qwen3.5:4b from Ollama registry during build)
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f images/llama-qwen3.Dockerfile \
-  -t cr.imys.in/hci/llama-qwen3-4b:latest --push /tmp/llama-build/
+  -t cr.imys.in/hci/llama-qwen3.5-4b:latest --push .
 
 # SRE Agent
 docker buildx build --platform linux/amd64,linux/arm64 \

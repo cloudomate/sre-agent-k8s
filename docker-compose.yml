@@ -4,17 +4,17 @@ services:
 
   # ──────────────────────────────────────────────────────────
   # llama.cpp server — model baked into the image
-  # Build: docker build -f images/llama-qwen3.Dockerfile -t llama-qwen3 .
+  # Build: docker build -f images/llama-qwen3.Dockerfile -t llama-qwen3.5 .
   # ──────────────────────────────────────────────────────────
   llamacpp:
-    image: cr.imys.in/hci/llama-qwen3-4b:latest
+    image: cr.imys.in/hci/llama-qwen3.5-4b:latest
     container_name: sre-llamacpp
     restart: unless-stopped
     ports:
       - "11434:11434"
     command:
       - "--model"
-      - "/models/qwen3.gguf"
+      - "/models/qwen3.5.gguf"
       - "--host"
       - "0.0.0.0"
       - "--port"
