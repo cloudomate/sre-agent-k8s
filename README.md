@@ -56,6 +56,23 @@ Current local model: Qwen3.5-4B Q4_0 (llama.cpp b8196). Requires ~4 GB RAM + 4 C
 
 ---
 
+## Zero-Config Integrations
+
+The following components work automatically when deployed in-cluster — no configuration required:
+
+| Component | How it works | Default |
+|---|---|---|
+| **Kubernetes API** | Uses the ServiceAccount token mounted by RBAC | `K8S_IN_CLUSTER=true` |
+| **Event Watcher** | Streams Warning events via the K8s Watch API | `WATCH_EVENTS=true` |
+| **Prometheus** | Queries via in-cluster DNS (kube-prometheus-stack) | `http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090` |
+| **Alertmanager** | Queries via in-cluster DNS (kube-prometheus-stack) | `http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093` |
+
+No kubeconfig, no kubectl binary, no external dependencies. Just deploy and these connect automatically.
+
+> **Note:** Only change `PROMETHEUS_URL` or `ALERTMANAGER_URL` if your monitoring stack uses a different namespace, Helm release name, or an external provider (e.g. Thanos, Mimir).
+
+---
+
 ## Quick Start
 
 ### Kubernetes — Helm (external LLM)
