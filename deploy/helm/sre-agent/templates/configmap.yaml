@@ -31,6 +31,7 @@ data:
   TWILIO_FROM: {{ .Values.twilio.from | quote }}
   SMS_TO: {{ .Values.twilio.smsTo | quote }}
   WHATSAPP_TO: {{ .Values.twilio.whatsappTo | quote }}
+  RESEND_FROM: {{ .Values.resend.from | quote }}
   WATCH_EVENTS: {{ .Values.watchEvents.enabled | quote }}
   WATCH_COOLDOWN_SECONDS: {{ .Values.watchEvents.cooldownSeconds | quote }}
   LOG_LEVEL: {{ .Values.logLevel | quote }}

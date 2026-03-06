@@ -1,7 +1,7 @@
 """
 Incident Report Publisher
 Formats and delivers incident reports to configured channels.
-Supported channels: slack, webhook, file, stdout, sms, whatsapp, email
+Supported channels: slack, teams, webhook, file, stdout, sms, whatsapp, email, resend
 """
 import json
 import logging
@@ -222,6 +222,108 @@ def format_slack_payload(report: dict) -> dict:
     }
 
 
+def format_teams_payload(report: dict) -> dict:
+    """Format report as a Microsoft Teams Adaptive Card message."""
+    sev = report.get("severity", "P2")
+    emoji = SEVERITY_EMOJI.get(sev, "🔵")
+    color = SEVERITY_COLOR.get(sev, "#808080")
+    conf = report.get("confidence", "low")
+    conf_emoji = CONFIDENCE_EMOJI.get(conf, "❓")
+
+    actions_text = "\n".join(
+        f"- **[{a.get('priority', '').upper()}]** {a.get('action', '')}"
+        for a in report.get("recommended_actions", [])[:5]
+    ) or "_No actions recommended_"
+
+    evidence_text = "\n".join(
+        f"- {e}" for e in report.get("evidence", [])[:6]
+    ) or "_No evidence collected_"
+
+    facts = [
+        {"title": "Incident ID", "value": f"`{report.get('incident_id', 'N/A')}`"},
+        {"title": "Service", "value": f"`{report.get('affected_service', 'unknown')}`"},
+        {"title": "Namespace", "value": f"`{report.get('affected_namespace', 'unknown')}`"},
+        {"title": "Category", "value": report.get("category", "unknown").upper()},
+        {"title": "Confidence", "value": f"{conf_emoji} {conf.upper()}"},
+    ]
+
+    body = [
+        {
+            "type": "TextBlock",
+            "size": "Large",
+            "weight": "Bolder",
+            "text": f"{emoji} [{sev}] {report.get('title', 'Service Failure')}",
+            "wrap": True,
+        },
+        {
+            "type": "FactSet",
+            "facts": facts,
+        },
+        {
+            "type": "TextBlock",
+            "text": f"**Summary**\n\n{report.get('investigation_summary', 'No summary')}",
+            "wrap": True,
+        },
+        {
+            "type": "TextBlock",
+            "text": f"**Root Cause**\n\n`{report.get('root_cause', 'unknown')}`",
+            "wrap": True,
+        },
+        {
+            "type": "TextBlock",
+            "text": f"**Evidence**\n\n{evidence_text}",
+            "wrap": True,
+        },
+        {
+            "type": "TextBlock",
+            "text": f"**Recommended Actions**\n\n{actions_text}",
+            "wrap": True,
+        },
+    ]
+
+    if report.get("requires_escalation"):
+        body.append({
+            "type": "TextBlock",
+            "text": f"⚠️ **ESCALATION REQUIRED**: {report.get('escalation_reason', '')}",
+            "wrap": True,
+            "color": "Attention",
+        })
+
+    meta_parts = []
+    if report.get("investigation_duration_s"):
+        meta_parts.append(f"Duration: {report['investigation_duration_s']}s")
+    if report.get("tool_calls_made") is not None:
+        meta_parts.append(f"Tools: {report['tool_calls_made']}")
+    runbook_refs = report.get("runbook_refs", [])
+    if runbook_refs:
+        meta_parts.append(f"Runbooks: {', '.join(runbook_refs)}")
+    if meta_parts:
+        body.append({
+            "type": "TextBlock",
+            "text": " | ".join(meta_parts),
+            "isSubtle": True,
+            "size": "Small",
+            "wrap": True,
+        })
+
+    return {
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "contentUrl": None,
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "msteams": {"width": "Full"},
+                    "body": body,
+                },
+            }
+        ],
+    }
+
+
 def format_email_html(report: dict) -> str:
     """Format report as an HTML email body."""
     sev = report.get("severity", "P2")
@@ -275,6 +377,24 @@ def _deliver_slack(report: dict):
             logger.info(f"Slack delivered: {resp.getcode()}")
     except Exception as e:
         logger.error(f"Slack delivery failed: {e}")
+
+
+def _deliver_teams(report: dict):
+    webhook = config.report.teams_webhook
+    if not webhook:
+        logger.warning("Teams webhook not configured, skipping.")
+        return
+    try:
+        payload = json.dumps(format_teams_payload(report)).encode()
+        req = urllib.request.Request(
+            webhook,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.info(f"Teams delivered: {resp.getcode()}")
+    except Exception as e:
+        logger.error(f"Teams delivery failed: {e}")
 
 
 def _deliver_webhook(report: dict):
@@ -404,18 +524,57 @@ def _deliver_email(report: dict):
         logger.error(f"Email delivery failed: {e}")
 
 
+def _deliver_resend(report: dict):
+    cfg = config.report
+    if not all([cfg.resend_api_key, cfg.resend_from, cfg.email_to]):
+        logger.warning("Resend not fully configured (RESEND_API_KEY, RESEND_FROM, EMAIL_TO required), skipping.")
+        return
+
+    sev = report.get("severity", "P2")
+    category = report.get("category", "unknown").upper()
+    subject = (
+        f"[SRE Alert] [{sev}] [{category}] {report.get('title', 'Service Failure')} "
+        f"— {report.get('affected_service', 'unknown')}"
+    )
+
+    payload = json.dumps({
+        "from": cfg.resend_from,
+        "to": cfg.email_to,
+        "subject": subject,
+        "html": format_email_html(report),
+        "text": format_markdown(report),
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {cfg.resend_api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+            logger.info(f"Resend delivered: id={result.get('id')}")
+    except Exception as e:
+        logger.error(f"Resend delivery failed: {e}")
+
+
 # ─────────────────────────────────────────────────────────────
 # Main publisher
 # ─────────────────────────────────────────────────────────────
 
 CHANNEL_HANDLERS = {
     "slack":     _deliver_slack,
+    "teams":     _deliver_teams,
     "webhook":   _deliver_webhook,
     "file":      _deliver_file,
     "stdout":    _deliver_stdout,
     "sms":       _deliver_sms,
     "whatsapp":  _deliver_whatsapp,
     "email":     _deliver_email,
+    "resend":    _deliver_resend,
 }
 
 
@@ -423,7 +582,7 @@ def publish_report(report: dict):
     """
     Deliver the incident report to all configured channels.
     Channels are configured via REPORT_CHANNELS env var (comma-separated).
-    Supported: slack, webhook, file, stdout, sms, whatsapp, email
+    Supported: slack, teams, webhook, file, stdout, sms, whatsapp, email, resend
     """
     channels = config.report.channels
     logger.info(f"Publishing report {report.get('incident_id')} to channels: {channels}")

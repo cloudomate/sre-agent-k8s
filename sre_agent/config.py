@@ -45,11 +45,12 @@ class MetricsConfig:
 
 @dataclass
 class ReportConfig:
-    # Output channels: "slack", "webhook", "file", "stdout", "sms", "whatsapp", "email"
+    # Output channels: "slack", "teams", "webhook", "file", "stdout", "sms", "whatsapp", "email", "resend"
     channels: list = field(default_factory=lambda: os.getenv(
         "REPORT_CHANNELS", "stdout,file"
     ).split(","))
     slack_webhook: Optional[str] = os.getenv("SLACK_WEBHOOK_URL", None)
+    teams_webhook: Optional[str] = os.getenv("TEAMS_WEBHOOK_URL", None)
     report_webhook: Optional[str] = os.getenv("REPORT_WEBHOOK_URL", None)
     report_dir: str = os.getenv("REPORT_DIR", "./reports")
     runbook_dir: str = os.getenv("RUNBOOK_DIR", "./runbooks")
@@ -69,6 +70,10 @@ class ReportConfig:
     smtp_password: Optional[str] = os.getenv("SMTP_PASSWORD", None)
     email_from: Optional[str] = os.getenv("EMAIL_FROM", None)
     email_to: list = field(default_factory=lambda: [e for e in os.getenv("EMAIL_TO", "").split(",") if e.strip()])
+
+    # Resend (https://resend.com)
+    resend_api_key: Optional[str] = os.getenv("RESEND_API_KEY", None)
+    resend_from: Optional[str] = os.getenv("RESEND_FROM", None)  # e.g. SRE Agent <alerts@yourdomain.com>
 
 
 @dataclass

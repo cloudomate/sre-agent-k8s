@@ -29,7 +29,10 @@ data:
   PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
   ALERTMANAGER_URL: "http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093"
 
-  # Report channels: stdout,file,slack,webhook,sms,whatsapp,email (comma-separated)
+  # Resend (https://resend.com) — add "resend" to REPORT_CHANNELS; API key goes in secret.yaml
+  RESEND_FROM: ""              # e.g. SRE Agent <alerts@yourdomain.com>
+
+  # Report channels: stdout,file,slack,teams,webhook,sms,whatsapp,email,resend (comma-separated)
   REPORT_CHANNELS: "stdout,file,email"
   REPORT_DIR: "/app/reports"
   RUNBOOK_DIR: "/app/runbooks"

@@ -45,12 +45,16 @@ watchEvents:
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
 report:
-  channels: "stdout,file"  # comma-separated: stdout file slack webhook email sms whatsapp
+  channels: "stdout,file"  # comma-separated: stdout file slack teams webhook email resend sms whatsapp
   dir: "/app/reports"
   runbookDir: "/app/runbooks"
 
 # Slack
 slack:
+  webhookUrl: ""
+
+# Microsoft Teams
+teams:
   webhookUrl: ""
 
 # Generic webhook
@@ -66,6 +70,11 @@ smtp:
   password: ""
   from: "sre-agent@example.com"
   to: ""
+
+# Resend (https://resend.com — email delivery API)
+resend:
+  apiKey: ""
+  from: ""                     # e.g. SRE Agent <alerts@yourdomain.com>
 
 # Twilio (SMS / WhatsApp)
 twilio:

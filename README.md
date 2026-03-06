@@ -18,7 +18,7 @@ Alertmanager webhook              ┘         │
                                      Runbook RAG lookup (runbook.py)
                                             │
                                      Report generation + delivery (reporter.py)
-                                     stdout │ file │ slack │ webhook │ email │ sms │ whatsapp
+                                     stdout │ file │ slack │ teams │ webhook │ email │ resend │ sms │ whatsapp
 ```
 
 ### Classification
@@ -162,9 +162,93 @@ Reports include severity, category, evidence, timeline, and recommended actions:
 }
 ```
 
-Reports are delivered to all configured channels: `stdout`, `file` (JSON + Markdown), `slack` (Block Kit), `webhook`, `email` (SMTP), `sms` (Twilio), `whatsapp` (Twilio).
+Reports are delivered to all configured channels: `stdout`, `file` (JSON + Markdown), `slack` (Block Kit), `teams` (Adaptive Cards), `webhook`, `email` (SMTP), `resend` (Resend API), `sms` (Twilio), `whatsapp` (Twilio).
 
 Email subjects include severity and category: `[SRE Alert] [P2] [APP] test-app CrashLoopBackOff — test-app`
+
+---
+
+## Report Channels Configuration
+
+Set `REPORT_CHANNELS` (comma-separated) to enable delivery targets. Each channel has its own configuration:
+
+### Slack
+
+| Variable | Location | Description |
+|---|---|---|
+| `SLACK_WEBHOOK_URL` | Secret | Slack incoming webhook URL |
+
+### Microsoft Teams
+
+Reports are formatted as [Adaptive Cards](https://adaptivecards.io/) (v1.4, full-width).
+
+| Variable | Location | Description |
+|---|---|---|
+| `TEAMS_WEBHOOK_URL` | Secret | Teams webhook URL (the URL itself contains the auth token) |
+
+**Setup via Power Automate (recommended):**
+
+1. Open the Teams channel → click `+` (Add a tab) or `...` → **Workflows**
+2. Select **"Post to a channel when a webhook request is received"**
+3. Choose the target Team and Channel, then confirm
+4. Copy the generated webhook URL (looks like `https://...powerplatform.com/.../invoke?api-version=1&...`)
+
+**Setup via Incoming Webhook connector (legacy):**
+
+1. Open the Teams channel → `...` → **Connectors** → **Incoming Webhook** → **Configure**
+2. Name it (e.g. "SRE Agent"), click **Create**, copy the URL
+
+```bash
+# Helm
+--set report.channels="stdout\,file\,teams" \
+--set teams.webhookUrl="https://...powerplatform.com/.../invoke?api-version=1&..."
+```
+
+### Email (SMTP)
+
+| Variable | Location | Description |
+|---|---|---|
+| `SMTP_HOST` | ConfigMap | SMTP server hostname |
+| `SMTP_PORT` | ConfigMap | SMTP port (default: 587) |
+| `SMTP_TLS` | ConfigMap | Enable STARTTLS (default: true, set false for local relays like MailHog) |
+| `SMTP_USER` | ConfigMap | SMTP username (optional) |
+| `SMTP_PASSWORD` | Secret | SMTP password (optional) |
+| `EMAIL_FROM` | ConfigMap | Sender address |
+| `EMAIL_TO` | ConfigMap | Comma-separated recipient addresses |
+
+### Email (Resend)
+
+[Resend](https://resend.com) is a developer email API — no SMTP server needed.
+
+| Variable | Location | Description |
+|---|---|---|
+| `RESEND_API_KEY` | Secret | Resend API key (`re_...`) |
+| `RESEND_FROM` | ConfigMap | Verified sender address (e.g. `SRE Agent <alerts@yourdomain.com>`) |
+| `EMAIL_TO` | ConfigMap | Comma-separated recipient addresses (shared with SMTP email) |
+
+```bash
+# Helm
+--set report.channels="stdout\,file\,resend" \
+--set resend.apiKey="re_xxxx" \
+--set resend.from="SRE Agent <alerts@yourdomain.com>" \
+--set smtp.to="oncall@example.com"
+```
+
+### SMS / WhatsApp (Twilio)
+
+| Variable | Location | Description |
+|---|---|---|
+| `TWILIO_ACCOUNT_SID` | Secret | Twilio account SID |
+| `TWILIO_AUTH_TOKEN` | Secret | Twilio auth token |
+| `TWILIO_FROM` | ConfigMap | Sender phone number (E.164) |
+| `SMS_TO` | ConfigMap | Comma-separated recipient phone numbers |
+| `WHATSAPP_TO` | ConfigMap | Comma-separated recipient phone numbers (`whatsapp:` prefix added automatically) |
+
+### Generic Webhook
+
+| Variable | Location | Description |
+|---|---|---|
+| `REPORT_WEBHOOK_URL` | Secret | URL to POST raw JSON report to |
 
 ---
 
